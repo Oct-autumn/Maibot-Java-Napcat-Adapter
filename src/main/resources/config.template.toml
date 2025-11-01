@@ -1,0 +1,15 @@
+qq_account = 1919810 # Bot的QQ号
+nickname = "NickName" # Bot的QQ昵称
+
+[group_filter]
+filter_type = "whitelist" # "whitelist"（白名单）或 "blacklist"（黑名单）
+group_list = [123456789, 114514, 987654321] # 群号列表
+
+[friend_filter]
+filter_type = "blacklist" # "whitelist"（白名单）或 "blacklist"（黑名单）
+friend_list = [123456789, 114514, 987654321] # 好友列表
+
+[banned_users]
+banned_list = [123456789, 114514, 987654321] # 被封禁用户列表
+
+#enable_poke = true # 是否启用戳一戳功能
