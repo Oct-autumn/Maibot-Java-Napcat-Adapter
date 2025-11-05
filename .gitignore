@@ -44,3 +44,4 @@ bin/
 
 ### Build Files ###
 src/main/resources/META-INF/mod.toml
+src/main/resources/META-INF/build-inf.properties

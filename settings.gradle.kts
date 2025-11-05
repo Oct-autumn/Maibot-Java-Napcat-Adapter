@@ -1,1 +1,1 @@
-rootProject.name = "Napcat-Adapter"
+rootProject.name = "napcat-adapter"

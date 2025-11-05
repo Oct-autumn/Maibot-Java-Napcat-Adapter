@@ -1,4 +1,5 @@
 import java.security.MessageDigest
+import java.time.Instant
 
 plugins {
     id("java")
@@ -7,7 +8,7 @@ plugins {
 // **Development only**
 // This variable is used to move the generated jar to a specific location after build.
 // If set to empty, it will not move the jar.
-val moveJarTo = "../MaiBot-java/core/mods"
+val moveJarTo = "../MaiBot-java/launcher/run/mods"
 
 /**
  * Mod Properties Object
@@ -22,8 +23,7 @@ class ModProperties {
     companion object {
         // Mod ID
         // The unique identifier for this mod.
-        // You should change this to your mod's ID.
-        const val MOD_ID = "napcat_adapter"
+        // To modify it, change the `rootProject.name` in file `settings.gradle.kts`.
 
         // Mod Version
         // The version info of this mod.
@@ -34,10 +34,9 @@ class ModProperties {
         const val MOD_VERSION = "0.1.0-Alpha"
 
         // Mod Package Name
-        // The root package name for this mod.
-        // For example, if your mod's file are under "org.example.mymod", set this to "org.example.mymod".
+        // The package name for this mod.
         // You should change this to your mod's package name.
-        const val MOD_PACKAGE_NAME = "org.maibot.mods.ncada"
+        const val MOD_PACKAGE_NAME = "org.maibot.mods"
 
         // SDK Version
         // The version range of the SDK that this mod qualified.
@@ -69,6 +68,12 @@ class ModProperties {
     }
 }
 
+run {
+    // Set up group and version from ModProperties
+    group = ModProperties.MOD_PACKAGE_NAME
+    version = ModProperties.MOD_VERSION
+}
+
 repositories {
     mavenCentral()
 }
@@ -77,6 +82,10 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:5.10.0"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // Lombok for reducing boilerplate code
+    compileOnly("org.projectlombok:lombok:1.18.42")
+    annotationProcessor("org.projectlombok:lombok:1.18.42")
 
     // SLF4J for logging
     implementation("org.slf4j:slf4j-api:2.0.17")
@@ -105,10 +114,8 @@ tasks.register("createModToml") {
             outputDir.mkdirs()
         }
 
-        if (ModProperties.MOD_ID.isBlank()) {
-            throw IllegalArgumentException("Mod ID cannot be null or empty")
-        } else if (Regex("""^[0-9a-zA-Z-_]+$""").matches(ModProperties.MOD_ID).not()) {
-            throw IllegalArgumentException("Mod ID contains illegal characters: ${ModProperties.MOD_ID}")
+        if (Regex("""^[0-9a-zA-Z-_]+$""").matches(this.project.name).not()) {
+            throw IllegalArgumentException("Mod ID contains illegal characters: ${this.project.name}")
         }
         if (ModProperties.MOD_VERSION.isEmpty()) {
             throw IllegalArgumentException("Mod Version cannot be null or empty")
@@ -126,7 +133,7 @@ tasks.register("createModToml") {
         val innerVersion = "${ModProperties.MOD_VERSION}+${calcSrcHash().substring(0, 8)}"
 
         var modTomlContent = """
-            mod_id = "${ModProperties.MOD_ID}"
+            mod_id = "${this.project.name}"
             version = "$innerVersion"
             package_name = "${ModProperties.MOD_PACKAGE_NAME}"
             sdk_version = "${ModProperties.MOD_SDK_VERSION}"
@@ -154,14 +161,52 @@ tasks.register("createModToml") {
     }
 }
 
+// Create build-inf.properties
+tasks.register("createBuildInfo") {
+    // Collect dependencies to include in build info (only implementation dependencies)
+    // These info are needed by the Launcher to download correct dependencies
+    val implDeps1 = configurations.findByName("implementation")
+        ?.allDependencies?.joinToString(",") { dep ->
+            when (dep) {
+                is ProjectDependency ->
+                    "project:${dep.path}"
+
+                else -> {
+                    val g = dep.group ?: ""
+                    val n = dep.name
+                    val v = dep.version ?: ""
+                    listOf(g, n, v).filter { it.isNotEmpty() }.joinToString(":")
+                }
+            }
+        } ?: ""
+
+    val innerVersion = "$version+${calcSrcHash().substring(0, 8)}"
+
+    doLast {
+        val outputDir = file("src/main/resources/META-INF")
+        val outputFile = file("$outputDir/build-inf.properties")
+
+        if (!outputDir.exists()) {
+            outputDir.mkdirs()
+        }
+        outputFile.writeText(
+            """
+            version=$innerVersion
+            artifactId=${this.project.group}:${this.project.name}:${this.project.version}
+            buildTime=${Instant.now().epochSecond}
+            implDeps=$implDeps1
+        """.trimIndent()
+        )
+    }
+}
+
 tasks.jar {
-    archiveBaseName.set(ModProperties.MOD_ID)
+    archiveBaseName.set(this.project.name)
     archiveVersion.set(ModProperties.MOD_VERSION)
 }
 
 tasks.register("jarAndMove") {
     dependsOn("jar")
-
     doLast {
         // **Development only**
         // Move the generated jar to a specific location for easier testing.
@@ -175,6 +220,7 @@ tasks.register("jarAndMove") {
 }
 
 tasks.named("processResources") {
+    dependsOn("createBuildInfo")
     dependsOn("createModToml")
 }
 
@@ -209,6 +255,7 @@ fun isValidVersionRange(versionRange: String): Boolean {
 /**
  * Mod Dependencies Data Class
  */
+@SuppressWarnings("unused")
 class ModDependencies {
     var id: String
     var version: String
@@ -221,8 +268,7 @@ class ModDependencies {
         if (versionRange.isEmpty()) {
             throw IllegalArgumentException("Mod dependency version cannot be null or empty")
         }
-
-        if (!versionRange.equals("*")) {
+        if (versionRange != "*") {
             // Simple validation for version range format
             if (isValidVersionRange(versionRange).not()) {
                 throw IllegalArgumentException("Mod dependency version range format is invalid: $versionRange")

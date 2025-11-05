@@ -10,6 +10,7 @@ import java.util.List;
 
 @ModMainClass(author = "Maibot Team", description = "A mod provides protocol support for QQ-Napcat.")
 public class NapcatAdapterMod extends Mod {
+    /// 平台名称
     public static final String PLATFORM_NAME = "qq";
 
     // This is a placeholder for the NapcatAdapterMod class.
