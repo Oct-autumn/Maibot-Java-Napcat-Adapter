@@ -2,12 +2,13 @@ package org.maibot.mods.ncada.msgevt;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.NonNull;
-import org.maibot.sdk.SeqGenerator;
+import org.maibot.sdk.SNoGenerator;
 import org.maibot.sdk.Util;
-import org.maibot.sdk.db.DatabaseService;
-import org.maibot.sdk.db.dao.Message;
-import org.maibot.sdk.model.msgevt.AbstractMessageEvent;
-import org.maibot.sdk.model.msgevt.MessageMeta;
+import org.maibot.sdk.storage.model.msgevt.AbstractMessageEvent;
+import org.maibot.sdk.storage.model.msgevt.MessageMeta;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.JsonNodeFactory;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.util.Base64;
 import java.util.List;
@@ -16,7 +17,8 @@ import java.util.Map;
 /**
  * 消息事件
  */
-public class MessageEvent extends AbstractMessageEvent {
+public final class MessageEvent extends AbstractMessageEvent {
+    private static final String OBJECT_TYPE = MessageEvent.class.getName();
     /// 消息内容
     @JsonProperty(value = "message_seg")
     MessageSeg          messageSeg;
@@ -29,11 +31,11 @@ public class MessageEvent extends AbstractMessageEvent {
       MessageMeta.EntityInfo senderInfo,
       MessageMeta.StreamInfo streamInfo,
       Long timestamp,
-      SeqGenerator.Sequence sequence,
+      SNoGenerator.SerialNo sequence,
       MessageSeg messageSeg,
       Map<String, String> extra
     ) {
-        super(platform, senderInfo, streamInfo, timestamp, sequence);
+        super(platform, senderInfo, streamInfo, timestamp, sequence, OBJECT_TYPE);
         this.messageSeg = messageSeg;
         this.extra = extra;
     }
@@ -44,12 +46,13 @@ public class MessageEvent extends AbstractMessageEvent {
     }
 
     @Override
-    public Message toDatabaseObject(DatabaseService dbService) {
-        var message = super.toDatabaseObject(dbService);
+    protected String toRawContentJson(ObjectMapper objectMapper) {
+        ObjectNode node = new JsonNodeFactory().objectNode();
 
-        // TODO: 将消息内容序列化为数据库存储格式
+        node.put("message_seg", objectMapper.writeValueAsString(this.messageSeg));
+        node.put("extra", objectMapper.writeValueAsString(this.extra));
 
-        return null;
+        return objectMapper.writeValueAsString(node);
     }
 
     @Override
@@ -58,7 +61,7 @@ public class MessageEvent extends AbstractMessageEvent {
           "MessageEvent[messageMeta=%s, timestamp=%d, sequence=%s, messageSeg=%s, extra=%s]",
           this.messageMeta,
           this.timestamp,
-          this.sequence,
+          this.serialNo,
           this.messageSeg,
           this.extra
         );
@@ -96,8 +99,8 @@ public class MessageEvent extends AbstractMessageEvent {
             return new MessageSeg("list", segList, null, null, null);
         }
 
-        public static MessageSeg forwardSeg(MessageSeg... segments) {
-            return new MessageSeg("forward", List.of(segments), null, null, null);
+        public static MessageSeg forwardSeg(List<MessageSeg> segments) {
+            return new MessageSeg("forward", segments, null, null, null);
         }
 
         public static MessageSeg textSeg(String strData) {
@@ -165,22 +168,6 @@ public class MessageEvent extends AbstractMessageEvent {
               extData,
               segList
             );
-        }
-
-        public enum SegType {
-            LIST("list"),
-            TEXT("text"),
-            IMAGE("image"),
-            VOICE("voice"),
-            EMOJI("emoji"),
-            AT("at"),
-            FORWARD("forward");
-
-            private final String value;
-
-            SegType(String value) {
-                this.value = value;
-            }
         }
     }
 }

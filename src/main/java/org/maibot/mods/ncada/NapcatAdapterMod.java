@@ -13,9 +13,16 @@ public class NapcatAdapterMod extends Mod {
     /// 平台名称
     public static final String PLATFORM_NAME = "qq";
 
+    WsRouter wsRouter;
+
     // This is a placeholder for the NapcatAdapterMod class.
     @AutoInject
     private NapcatAdapterMod(WsRouter wsRouter) {
+        this.wsRouter = wsRouter;
+    }
+
+    @Override
+    public void onEnable() {
         wsRouter.registerProcessor(new WsProcessors("/ws/napcat", List.of(NcProtocolDecoder.class)));
     }
 }

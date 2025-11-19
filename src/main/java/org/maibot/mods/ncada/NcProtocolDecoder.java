@@ -4,22 +4,28 @@ package org.maibot.mods.ncada;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
+import org.maibot.mods.ncada.evtbuffer.BarrierOrderedEvtQueue;
 import org.maibot.mods.ncada.msgevt.MessageEvent;
 import org.maibot.mods.ncada.msgevt.MessageEventFactory;
-import org.maibot.sdk.SeqGenerator;
-import org.maibot.sdk.TaskExecutorService;
+import org.maibot.sdk.SNoGenerator;
+import org.maibot.sdk.TaskExecuteService;
 import org.maibot.sdk.ioc.AutoInject;
 import org.maibot.sdk.ioc.Value;
-import org.maibot.sdk.model.msgevt.MessageMeta;
+import org.maibot.sdk.storage.model.msgevt.MessageMeta;
+import org.maibot.sdk.storage.model.msgevt.MessageMetaFactory;
+import org.maibot.sdk.storage.GlobalCacheManager;
+import org.maibot.sdk.storage.domain.StreamType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.ObjectMapper;
 
+import javax.cache.Cache;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.Condition;
@@ -31,19 +37,26 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
     private static final Logger log = LoggerFactory.getLogger(NcProtocolDecoder.class);
 
 
-    private final TaskExecutorService taskExecutorService;
-    private final NapcatReqManager    napcatReqManager;
+    private final TaskExecuteService taskExecuteService;
+    private final ObjectMapper       objectMapper;
+
+    /// Napcat请求管理器
+    private final NapcatReqManager       napcatReqManager;
+    /// 消息事件缓冲器
+    private final BarrierOrderedEvtQueue barrierOrderedEvtQueue;
+
+    /// 二进制数据缓存
+    private final Cache<String, byte[]> binDataCache;
 
     /// 配置项
     private final    AtomicReference<Config> config                = new AtomicReference<>();
+    /// 心跳线程唤醒锁
+    private final    ReentrantLock           heartbeatLock         = new ReentrantLock();
     /// 心跳线程唤醒条件
     /// 用于在连接断开时通知心跳线程退出
-    private final    ReentrantLock           heartbeatLock         = new ReentrantLock();
     private final    Condition               heartbeatCondition    = heartbeatLock.newCondition();
     /// QQ表情映射
     private final    QQFace                  qqFace                = new QQFace();
-    /// Json映射器
-    private final    JsonMapper              jsonMapper            = new JsonMapper();
     /// 元事件反序列化器
     private final    MetaEventDeserializer   metaEventDeserializer = new MetaEventDeserializer();
     /// 消息反序列化器
@@ -54,12 +67,30 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
 
     @AutoInject
     public NcProtocolDecoder(
-      TaskExecutorService taskExecutorService,
+      TaskExecuteService taskExecuteService,
+      ObjectMapper objectMapper,
+      GlobalCacheManager globalCacheManager,
       NapcatReqManager napcatReqManager,
+      BarrierOrderedEvtQueue barrierOrderedEvtQueue,
       @Value("${napcat-adapter:*}") Config config
     ) {
-        this.taskExecutorService = taskExecutorService;
+        this.taskExecuteService = taskExecuteService;
+        this.objectMapper = objectMapper;
         this.napcatReqManager = napcatReqManager;
+        this.barrierOrderedEvtQueue = barrierOrderedEvtQueue;
+
+        barrierOrderedEvtQueue.startBuffering();
+
+        this.binDataCache = globalCacheManager.createCache(
+          "ncada_bin_data_cache",
+          String.class,
+          byte[].class,
+          50,
+          100,
+          0,
+          null
+        );
+
 
         this.config.set(config);
     }
@@ -81,10 +112,12 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
 
     @Override
     public void channelRead0(ChannelHandlerContext ctx, TextWebSocketFrame msg) {
+        var receiveTime = System.currentTimeMillis();
+
         // 解析 JSON
         JsonNode jsonNode;
         try {
-            jsonNode = jsonMapper.readTree(msg.text());
+            jsonNode = objectMapper.readTree(msg.text());
         } catch (JacksonException e) {
             log.warn("无法解析 NapCat 事件内容: {}", msg.text(), e);
             return;
@@ -93,11 +126,12 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
         var mdcCtx = MDC.getCopyOfContextMap(); // 获取当前 MDC 上下文
 
         // 发起异步解析
-        taskExecutorService.submit(
+        taskExecuteService.submit(
           () -> {
+              var sNo = SNoGenerator.nextSeq();
               // 传递 MDC 上下文
               MDC.setContextMap(mdcCtx);
-              MDC.put("evtId", Integer.toHexString(System.identityHashCode(jsonNode)));
+              MDC.put("sNo", sNo.toHexString());
 
               // 根据事件类型进行处理
               log.debug("Full event JSON: \n{}", jsonNode.toPrettyString());
@@ -111,8 +145,13 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                       // 消息事件
                       // 私聊、群聊消息等
                       case "message" -> {
-                          var msgEvt = this.messageDeserializer.deserialize(ctx, jsonNode);
-                          // TODO: 处理消息事件（将其放入Core的事件队列中）
+                          barrierOrderedEvtQueue.startDeserializing(sNo, receiveTime);
+                          var msgEvt = this.messageDeserializer.deserialize(ctx, sNo, jsonNode);
+                          if (msgEvt == null) {
+                              barrierOrderedEvtQueue.failDeserializing(sNo);
+                          } else {
+                              barrierOrderedEvtQueue.finishDeserializing(msgEvt);
+                          }
                       }
                       // 通知事件
                       // 加入/退出群等
@@ -131,7 +170,10 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                   MDC.clear();
               }
           }, false
-        );
+        ).exceptionally(throwable -> {
+            log.warn("异步反序列化 NapCat 事件时发生异常", throwable);
+            return null;
+        });
     }
 
     /**
@@ -142,7 +184,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
      * @param streamType 消息类型
      * @return 是否过滤该消息
      */
-    private boolean applyFilters(String senderId, String groupId, MessageMeta.StreamType streamType) {
+    private boolean applyFilters(String senderId, String groupId, StreamType streamType) {
         var config = this.config.get();
 
         // 检查是否为全局黑名单用户
@@ -272,7 +314,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                 if (!running) {
                     running = true;
                     // 启动心跳监测线程
-                    taskExecutorService.submit(() -> heartbeatWatchdog(ctx), true);
+                    taskExecuteService.submit(() -> heartbeatWatchdog(ctx), true);
                 }
             }
         }
@@ -292,19 +334,17 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
             return displayName;
         }
 
-        public MessageEvent deserialize(ChannelHandlerContext ctx, JsonNode rawJsonNode) {
+        public MessageEvent deserialize(ChannelHandlerContext ctx, SNoGenerator.SerialNo sNo, JsonNode rawJsonNode) {
             var msgEventFactory = new MessageEventFactory();
 
             // 消息ID（可用于识别，但进入数据库时不能用来作为主键索引，原因见NapCat实现）
             msgEventFactory.putExtra("message_id", rawJsonNode.get("message_id").asString());
             // 原始消息
             //msgEventFactory.putExtra("raw_message", jsonNode.get("raw_message").asString());
-            // 平台标识
-            msgEventFactory.setPlatform(PLATFORM_NAME);
             // 消息时间戳（秒级，由NapCat生成）
-            msgEventFactory.setTimestamp(rawJsonNode.get("time").asLong());
+            msgEventFactory.setTimestamp(rawJsonNode.get("time").asLong() * 1000);
             // 消息序列号
-            msgEventFactory.setSequence(SeqGenerator.nextSeq());
+            msgEventFactory.setSequence(sNo);
 
             // 消息类型（私聊/群聊）
             var messageType = rawJsonNode.get("message_type").asString();
@@ -317,20 +357,25 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
             var subType = subTypeObj.asString();
 
             // 提取消息来源信息（发送者、群组等）
-            msgEventFactory.setStreamInfo(extractStreamInfo(rawJsonNode, messageType, subType));
-            if (msgEventFactory.getStreamInfo() == null) {
+            var streamInfo = extractStreamInfo(rawJsonNode, messageType, subType);
+            if (streamInfo == null) {
                 return null;
             } else {
-                // 发送者信息
-                msgEventFactory.setSenderInfo(msgEventFactory.getStreamInfo().privateInfo());
+                // 生成事件元信息
+                msgEventFactory.setMessageMeta(new MessageMetaFactory().setPlatform(PLATFORM_NAME).setSenderInfo(
+                  streamInfo.privateInfo()).setStreamInfo(streamInfo).build());
             }
 
             // 消息内容
-            var message = parseMessageContent(ctx, rawJsonNode.get("message"), false, msgEventFactory.getStreamInfo());
-            if (message == null) {
-                return null;
-            }
-            msgEventFactory.setMessage(message);
+            msgEventFactory.setMessage(Objects.requireNonNullElseGet(
+              parseMessageContent(
+                ctx,
+                rawJsonNode.get("message"),
+                false,
+                msgEventFactory.getMessageMeta().streamInfo()
+              ),
+              () -> MessageEvent.MessageSeg.listSeg(List.of(MessageEvent.MessageSeg.textSeg("无法解析的消息内容")))
+            ));
 
             var msgEvent = msgEventFactory.build();
             log.debug(msgEvent.toString());
@@ -369,11 +414,6 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                 if (replyDetailJsonNode == null) {
                     messageSegments.add(MessageEvent.MessageSeg.textSeg("[无法定位被回复消息]"));
                 } else {
-                    var replyMsgSeg = parseMessageContent(ctx, replyDetailJsonNode.get("message"), true, streamInfo);
-                    if (replyMsgSeg == null) {
-                        replyMsgSeg = MessageEvent.MessageSeg.textSeg("无法解析的回复内容");
-                    }
-
                     var senderInfoJsonNode = replyDetailJsonNode.get("sender");
 
                     String displayName = getDisplayName(senderInfoJsonNode);
@@ -392,7 +432,17 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                       displayName,
                       displayId
                     )));
-                    messageSegments.add(replyMsgSeg);
+
+                    messageSegments.add(Objects.requireNonNullElseGet(
+                      parseMessageContent(
+                        ctx,
+                        replyDetailJsonNode.get("message"),
+                        true,
+                        streamInfo
+                      ),
+                      () -> MessageEvent.MessageSeg.textSeg("无法解析的回复内容")
+                    ));
+
                     messageSegments.add(MessageEvent.MessageSeg.textSeg("] 说："));
                 }
 
@@ -427,7 +477,21 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                 isEmoji = msgData.has("emoji_id") && msgData.has("emoji_package_id");
             }
 
-            byte[] imageData = Utils.getImgData(msgData.get("url").asString());
+            byte[] imageData = binDataCache.invoke(
+              msgData.get("url").asString(), (entry, args) -> {
+                  if (entry.exists()) {
+                      return entry.getValue();
+                  } else {
+                      var fetchedData = Utils.getImgData(msgData.get("url").asString());
+                      if (fetchedData != null) {
+                          entry.setValue(fetchedData);
+                          return fetchedData;
+                      } else {
+                          return null;
+                      }
+                  }
+              }
+            );
 
             if (imageData == null) {
                 var defaultPrompt = isEmoji ? "[未知表情包]" : "[未知图片]";
@@ -454,8 +518,11 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                 var selfInfo = napcatReqManager.getSelfInfo(ctx);
                 if (selfInfo == null) {
                     messageSegments.add(MessageEvent.MessageSeg.atSeg(
-                      String.format("@<%s:%s> ", config.get().nickname(), config.get().qqAccount()),
-                      true
+                      String.format(
+                        "@<%s:%s> ",
+                        config.get().nickname(),
+                        config.get().qqAccount()
+                      ), true
                     ));
                 } else {
                     messageSegments.add(MessageEvent.MessageSeg.atSeg(
@@ -463,8 +530,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                         "@<%s:%s> ",
                         selfInfo.get("nickname").asString(),
                         selfInfo.get("user_id").asString()
-                      ),
-                      true
+                      ), true
                     ));
                 }
             } else {
@@ -490,10 +556,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
             }
         }
 
-        private void extractRps(
-          JsonNode msgData,
-          List<MessageEvent.MessageSeg> messageSegments
-        ) {
+        private void extractRps(JsonNode msgData, List<MessageEvent.MessageSeg> messageSegments) {
             var result = msgData.get("result").asString();
 
             switch (result) {
@@ -504,10 +567,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
             }
         }
 
-        private void extractDice(
-          JsonNode msgData,
-          List<MessageEvent.MessageSeg> messageSegments
-        ) {
+        private void extractDice(JsonNode msgData, List<MessageEvent.MessageSeg> messageSegments) {
             var result = msgData.get("result").asString();
             messageSegments.add(MessageEvent.MessageSeg.textSeg(String.format("[掷骰子: %s]", result)));
         }
@@ -541,10 +601,10 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                     case "image" -> // 图片消息
                       extractImage(msgData, messageSegments);
                     case "record" -> {
-                        // 语音消息
+                        messageSegments.add(MessageEvent.MessageSeg.textSeg("[语音]"));
                     }
                     case "video" -> {
-                        // 视频消息
+                        messageSegments.add(MessageEvent.MessageSeg.textSeg("[视频]"));
                     }
                     case "at" -> // @消息
                       extractAt(ctx, msgData, messageSegments, streamInfo);
@@ -553,15 +613,17 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                     case "dice" -> // 掷骰子
                       extractDice(msgData, messageSegments);
                     case "shake" -> {
-                        // 抖动消息
+                        messageSegments.add(MessageEvent.MessageSeg.textSeg("[窗口抖动]"));
                     }
                     case "share" -> {
                         // 分享消息
+                        messageSegments.add(MessageEvent.MessageSeg.textSeg("[分享]"));
                     }
                     case "forward" -> // 转发消息
                       new ForwardMessageExtractor().extractForward(ctx, msgData, messageSegments);
                     case "node" -> {
                         // 转发消息节点
+                        messageSegments.add(MessageEvent.MessageSeg.textSeg("[转发消息节点]"));
                     }
                     default -> log.warn("未知的消息子类型: {}", subMsg.get("type").asString());
                 }
@@ -575,11 +637,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
             }
         }
 
-        private MessageMeta.StreamInfo extractStreamInfo(
-          JsonNode rawJsonNode,
-          String messageType,
-          String subType
-        ) {
+        private MessageMeta.StreamInfo extractStreamInfo(JsonNode rawJsonNode, String messageType, String subType) {
             switch (messageType) {
                 case "private" -> {
                     switch (subType) {
@@ -588,7 +646,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                             if (applyFilters(
                               rawJsonNode.get("sender").get("user_id").asString(),
                               null,
-                              MessageMeta.StreamType.PRIVATE
+                              StreamType.PRIVATE
                             )) {
                                 // 过滤该消息
                                 return null;
@@ -601,9 +659,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                                 senderInfoJson.get("user_id").asString(),
                                 senderInfoJson.get("nickname").asString(),
                                 senderInfoJson.get("card").asString()
-                              ),
-                              null,
-                              MessageMeta.StreamType.PRIVATE
+                              ), null, StreamType.PRIVATE
                             );
                         }
                         case "group" -> {
@@ -622,7 +678,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                             if (applyFilters(
                               rawJsonNode.get("sender").get("user_id").asString(),
                               rawJsonNode.get("group_id").asString(),
-                              MessageMeta.StreamType.GROUP
+                              StreamType.GROUP
                             )) {
                                 return null;
                             }
@@ -640,7 +696,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                                 rawJsonNode.get("group_id").asString(),
                                 rawJsonNode.get("group_name").asString()
                               ),
-                              MessageMeta.StreamType.GROUP
+                              StreamType.GROUP
                             );
                         }
                         case "anonymous" -> {
@@ -655,10 +711,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
         }
 
         private class ForwardMessageExtractor {
-            private MessageEvent.MessageSeg recursivelyExtractForward(
-              ChannelHandlerContext ctx,
-              JsonNode forwardJson
-            ) {
+            private MessageEvent.MessageSeg recursivelyExtractForward(ChannelHandlerContext ctx, JsonNode forwardJson) {
                 if (forwardJson == null) {
                     log.warn("转发消息内容为空");
                     return null;
@@ -698,9 +751,8 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
 
                     String displayName = getDisplayName(senderInfoJsonNode);
 
-                    String displayId = senderInfoJsonNode.has("user_id")
-                      ? senderInfoJsonNode.get("user_id").asString()
-                      : "未知ID";
+                    String displayId = senderInfoJsonNode.has("user_id") ? senderInfoJsonNode.get("user_id")
+                                                                                             .asString() : "未知ID";
 
                     forwardSegments.add(MessageEvent.MessageSeg.textSeg(String.format(
                       "\n[<%s:%s>:",
@@ -708,14 +760,17 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                       displayId
                     )));
 
-                    forwardSegments.add(parseMessageContent(ctx, node.get("message"), false, streamInfo));
+                    forwardSegments.add(Objects.requireNonNullElseGet(
+                      parseMessageContent(ctx, node.get("message"), false, streamInfo),
+                      () -> MessageEvent.MessageSeg.textSeg("无法解析的消息内容")
+                    ));
 
                     forwardSegments.add(MessageEvent.MessageSeg.textSeg("]"));
                 }
 
                 forwardSegments.add(MessageEvent.MessageSeg.textSeg("]"));
 
-                return MessageEvent.MessageSeg.listSeg(forwardSegments);
+                return MessageEvent.MessageSeg.forwardSeg(forwardSegments);
             }
 
             private void extractForward(
@@ -723,18 +778,11 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
               JsonNode msgData,
               List<MessageEvent.MessageSeg> messageSegments
             ) {
-                var forwardMsgDetailJsonNode = napcatReqManager.getForwardMsgDetail(
-                  ctx,
-                  msgData.get("id").asString()
-                );
+                var forwardMsgDetailJsonNode = napcatReqManager.getForwardMsgDetail(ctx, msgData.get("id").asString());
                 if (forwardMsgDetailJsonNode != null) {
-                    var forwardMessage = recursivelyExtractForward(
-                      ctx,
-                      forwardMsgDetailJsonNode.get("messages")
-                    );
+                    var forwardMessage = recursivelyExtractForward(ctx, forwardMsgDetailJsonNode.get("messages"));
                     if (forwardMessage != null) {
                         // 解析图片
-
                         messageSegments.add(forwardMessage);
                         return;
                     }

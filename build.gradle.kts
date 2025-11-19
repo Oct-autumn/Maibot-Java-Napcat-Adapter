@@ -3,6 +3,7 @@ import java.time.Instant
 
 plugins {
     id("java")
+    idea
 }
 
 // **Development only**
@@ -76,6 +77,7 @@ run {
 
 repositories {
     mavenCentral()
+    mavenLocal()
 }
 
 dependencies {
@@ -90,6 +92,9 @@ dependencies {
     // SLF4J for logging
     implementation("org.slf4j:slf4j-api:2.0.17")
 
+    // JCache for caching
+    implementation("javax.cache:cache-api:1.1.1")
+
     // Netty for networking
     implementation("io.netty:netty-all:4.2.6.Final")
 
@@ -100,7 +105,7 @@ dependencies {
     implementation("tools.jackson.core:jackson-databind:3.0.1")
 
     // SDK Dependency
-    implementation(files("../MaiBot-java/sdk/build/libs/sdk-0.1.0-Alpha.jar"))
+    implementation("org.maibot:sdk:0.1.0-SNAPSHOT")
 }
 
 // Create mod.toml
@@ -165,20 +170,18 @@ tasks.register("createModToml") {
 tasks.register("createBuildInfo") {
     // Collect dependencies to include in build info (only implementation dependencies)
     // These info are needed by the Launcher to download correct dependencies
-    val implDeps1 = configurations.findByName("implementation")
-        ?.allDependencies?.joinToString(",") { dep ->
-            when (dep) {
-                is ProjectDependency ->
-                    "project:${dep.path}"
+    val implDeps1 = configurations.findByName("implementation")?.allDependencies?.joinToString(",") { dep ->
+        when (dep) {
+            is ProjectDependency -> "project:${dep.path}"
 
-                else -> {
-                    val g = dep.group ?: ""
-                    val n = dep.name
-                    val v = dep.version ?: ""
-                    listOf(g, n, v).filter { it.isNotEmpty() }.joinToString(":")
-                }
+            else -> {
+                val g = dep.group ?: ""
+                val n = dep.name
+                val v = dep.version ?: ""
+                listOf(g, n, v).filter { it.isNotEmpty() }.joinToString(":")
             }
-        } ?: ""
+        }
+    } ?: ""
 
     val innerVersion = "$version+${calcSrcHash().substring(0, 8)}"
 

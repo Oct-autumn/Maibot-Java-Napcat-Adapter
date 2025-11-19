@@ -2,39 +2,24 @@ package org.maibot.mods.ncada.msgevt;
 
 import lombok.Getter;
 import lombok.Setter;
-import org.maibot.sdk.SeqGenerator;
-import org.maibot.sdk.model.msgevt.MessageMeta;
+import lombok.experimental.Accessors;
+import org.maibot.sdk.storage.model.msgevt.AbstractMessageEventFactory;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.util.HashMap;
 import java.util.Map;
 
-public class MessageEventFactory {
+public class MessageEventFactory extends AbstractMessageEventFactory {
+    private static final String OBJECT_TYPE = MessageEvent.class.getName();
+
     /// 额外字段的键值对
-    private final Map<String, String>       extra       = new HashMap<>();
-    /// 平台标识
-    @Getter
-    @Setter
-    private       String                  platform   = null;
-    /// 发送者信息
-    @Getter
-    @Setter
-    private       MessageMeta.EntityInfo  senderInfo = null;
-    /// 消息流信息
-    @Getter
-    @Setter
-    private       MessageMeta.StreamInfo  streamInfo  = null;
-    /// 消息序列号
-    @Getter
-    @Setter
-    private       SeqGenerator.Sequence     sequence    = null;
-    /// 消息时间戳
-    @Getter
-    @Setter
-    private       Long                      timestamp   = null;
+    private final Map<String, String>     extra   = new HashMap<>();
     /// 消息内容
     @Getter
     @Setter
-    private       MessageEvent.MessageSeg   message     = null;
+    @Accessors(chain = true)
+    private       MessageEvent.MessageSeg message = null;
 
     public boolean hasExtra(String key) {
         return this.extra.containsKey(key);
@@ -52,13 +37,36 @@ public class MessageEventFactory {
         this.extra.remove(key);
     }
 
+    public MessageEventFactory() {
+        super(MessageEvent.class.getName());
+    }
+
+    @Override
+    protected AbstractMessageEventFactory fromRawContentJson(ObjectMapper objectMapper, String jsonString) {
+        var rawContentNode = objectMapper.readTree(jsonString);
+
+        this.message = objectMapper.treeToValue(rawContentNode.get("message_seg"), MessageEvent.MessageSeg.class);
+
+        var extraNode = rawContentNode.get("extra");
+        if (extraNode instanceof ObjectNode objectNode) {
+            objectNode.forEachEntry((field, node) -> {
+                if (node.isString()) {
+                    this.extra.put(field, node.asString());
+                } // 非字符串类型的额外字段将被忽略
+            });
+        }
+
+        return this;
+    }
+
+    @Override
     public MessageEvent build() {
         return new MessageEvent(
-          platform,
-          senderInfo,
-          streamInfo,
+          messageMeta.platform(),
+          messageMeta.senderInfo(),
+          messageMeta.streamInfo(),
           timestamp,
-          sequence,
+          serialNo,
           message,
           extra
         );
