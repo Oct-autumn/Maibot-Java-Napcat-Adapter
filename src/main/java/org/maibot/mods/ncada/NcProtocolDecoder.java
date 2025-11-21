@@ -164,8 +164,6 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                       case "" -> echoReplyDeserializer(ctx, jsonNode);
                       default -> log.warn("未知的 message.post_type: {}", postType);
                   }
-              } catch (Throwable e) {
-                  log.error("处理 NapCat 事件时发生异常", e);
               } finally {
                   MDC.clear();
               }
