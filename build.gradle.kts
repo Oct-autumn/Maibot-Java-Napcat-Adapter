@@ -45,7 +45,7 @@ class ModProperties {
         // (e.g., "1.0.0" means it only works with SDK version 1.0.0)
         // If your mod works with a range of SDK versions, you can specify it like "[1.0.0,2.0.0)".
         // (e.g., "[1.0.0,2.0.0)" means it works with SDK versions from 1.0.0 (inclusive) to 2.0.0 (exclusive))
-        const val MOD_SDK_VERSION = "0.1.0-Alpha"
+        const val MOD_SDK_VERSION = "(,0.1.0]"
 
         // Mod License (recommended)
         // The open source license used by this mod.
@@ -89,6 +89,9 @@ dependencies {
     compileOnly("org.projectlombok:lombok:1.18.42")
     annotationProcessor("org.projectlombok:lombok:1.18.42")
 
+    // Jarkarta Persistence API
+    implementation("jakarta.persistence:jakarta.persistence-api:3.2.0")
+
     // SLF4J for logging
     implementation("org.slf4j:slf4j-api:2.0.17")
 
@@ -105,7 +108,7 @@ dependencies {
     implementation("tools.jackson.core:jackson-databind:3.0.1")
 
     // SDK Dependency
-    implementation("org.maibot:sdk:0.1.0-SNAPSHOT")
+    implementation("org.maibot:sdk:0.1.0-Alpha")
 }
 
 // Create mod.toml

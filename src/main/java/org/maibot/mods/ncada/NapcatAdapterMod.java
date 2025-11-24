@@ -1,5 +1,6 @@
 package org.maibot.mods.ncada;
 
+import org.maibot.mods.ncada.decoder.NcProtocolDecoder;
 import org.maibot.sdk.ioc.AutoInject;
 import org.maibot.sdk.mod.Mod;
 import org.maibot.sdk.mod.ModMainClass;

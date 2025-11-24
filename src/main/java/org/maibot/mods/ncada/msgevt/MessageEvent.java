@@ -3,9 +3,9 @@ package org.maibot.mods.ncada.msgevt;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.NonNull;
 import org.maibot.sdk.SNoGenerator;
-import org.maibot.sdk.Util;
 import org.maibot.sdk.storage.model.msgevt.AbstractMessageEvent;
 import org.maibot.sdk.storage.model.msgevt.MessageMeta;
+import org.maibot.sdk.util.StrUtils;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
@@ -68,31 +68,31 @@ public final class MessageEvent extends AbstractMessageEvent {
     }
 
     /**
-     * @param segType 消息段类型，常见类型：
-     *                <ul>
-     *                <li> <code>list</code>: 消息段列表
-     *                <li> <code>text</code>: 文本消息段
-     *                <li> <code>image</code>: 图片消息段
-     *                <li> <code>emoji</code>: 表情包（本质还是图片）消息段
-     *                <li> <code>voice</code>: 语音消息段
-     *                <li> <code>at</code>: At消息段
-     *                </ul>
-     * @param segList 当 type 为 <code>list</code> 时，表示子消息段列表；<br>
-     *                否则为null
-     * @param strData 当 type 为 <code>text</code> 时，表示文本内容；<br>
-     *                当 type 为 <code>at</code> 时，表示可读的at内容；<br>
-     *                除了当 type 为 <code>list</code>、<code>image</code>、<code>emoji</code>
-     *                或 <code>voice</code> 时为null，其他情况视Adapter实现而定
-     * @param binData 当 type 为 <code>image</code>、<code>emoji</code> 或 <code>voice</code> 时，表示Base64编码的数据；<br>
-     *                除了当 type 为 <code>list</code>、<code>text</code> 或 <code>at</code> 时为null，其他情况视Adapter实现而定
-     * @param extra   当 type 为 <code>at</code> 时，包含键值对 <code>"self_mention"</code>，表示是否At自身；<br>
-     *                其他情况下作为额外字段的键值对，视Adapter实现而定
+     * @param segType   消息段类型，常见类型：
+     *                  <ul>
+     *                  <li> <code>list</code>: 消息段列表
+     *                  <li> <code>text</code>: 文本消息段
+     *                  <li> <code>image</code>: 图片消息段
+     *                  <li> <code>emoji</code>: 表情包（本质还是图片）消息段
+     *                  <li> <code>voice</code>: 语音消息段
+     *                  <li> <code>at</code>: At消息段
+     *                  </ul>
+     * @param segList   当 type 为 <code>list</code> 时，表示子消息段列表；<br>
+     *                  否则为null
+     * @param strData   当 type 为 <code>text</code> 时，表示文本内容；<br>
+     *                  当 type 为 <code>at</code> 时，表示可读的at内容；<br>
+     *                  除了当 type 为 <code>list</code>、<code>image</code>、<code>emoji</code>
+     *                  或 <code>voice</code> 时为null，其他情况视Adapter实现而定
+     * @param binFileId 当 type 为 <code>image</code>、<code>emoji</code> 或 <code>voice</code> 时，表示二进制文件ID；<br>
+     *                  除了当 type 为 <code>list</code>、<code>text</code> 或 <code>at</code> 时为null，其他情况视Adapter实现而定
+     * @param extra     当 type 为 <code>at</code> 时，包含键值对 <code>"self_mention"</code>，表示是否At自身；<br>
+     *                  其他情况下作为额外字段的键值对，视Adapter实现而定
      */
     public record MessageSeg(
       @JsonProperty(value = "seg_type", required = true) String segType,
       @JsonProperty(value = "seg_list") List<MessageSeg> segList,
       @JsonProperty(value = "str_data") String strData,
-      @JsonProperty(value = "bin_data") byte[] binData,
+      @JsonProperty(value = "bin_data") Long binFileId,
       @JsonProperty(value = "extra") Map<String, String> extra
     ) {
         public static MessageSeg listSeg(List<MessageSeg> segList) {
@@ -111,16 +111,16 @@ public final class MessageEvent extends AbstractMessageEvent {
             return new MessageSeg("at", null, strData, null, Map.of("self_mention", Boolean.toString(selfMention)));
         }
 
-        public static MessageSeg imageSeg(byte[] binData) {
-            return new MessageSeg("image", null, null, binData, null);
+        public static MessageSeg imageSeg(long binFileId) {
+            return new MessageSeg("image", null, null, binFileId, null);
         }
 
-        public static MessageSeg voiceSeg(byte[] binData) {
-            return new MessageSeg("voice", null, null, binData, null);
+        public static MessageSeg voiceSeg(long binFileId) {
+            return new MessageSeg("voice", null, null, binFileId, null);
         }
 
-        public static MessageSeg emojiSeg(byte[] binData) {
-            return new MessageSeg("emoji", null, null, binData, null);
+        public static MessageSeg emojiSeg(long binFileId) {
+            return new MessageSeg("emoji", null, null, binFileId, null);
         }
 
         @Override
@@ -130,18 +130,17 @@ public final class MessageEvent extends AbstractMessageEvent {
 
             var strData = "";
             if (this.strData != null && !this.strData.isBlank()) {
-                strData = Util.strAbbreviate(this.strData.strip(), 20, 5);
+                strData = StrUtils.strAbbreviate(this.strData.strip(), 20, 5);
             }
 
             var b64Data = "";
-            if (this.binData != null && this.binData.length > 0) {
-                var b64DataRaw = Base64.getEncoder().encodeToString(this.binData);
+            if (this.binFileId != null) {
                 switch (segType) {
-                    case "image", "emoji" -> b64Data = "data:image;base64,";
-                    case "voice" -> b64Data = "data:audio;base64,";
-                    default -> b64Data = "data:segType;base64,";
+                    case "image", "emoji" -> b64Data = "data:image;id=";
+                    case "voice" -> b64Data = "data:audio;id=";
+                    default -> b64Data = "data:segType;id=";
                 }
-                b64Data += Util.strAbbreviate(b64DataRaw, 20, 5);
+                b64Data += this.binFileId;
             }
 
             var segList = "";
