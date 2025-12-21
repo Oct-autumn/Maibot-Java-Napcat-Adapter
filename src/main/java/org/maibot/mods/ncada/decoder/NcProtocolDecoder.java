@@ -46,7 +46,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
     /// 消息事件缓冲器
     final BarrierOrderedEvtQueue barrierOrderedEvtQueue;
     /// 二进制数据缓存
-    final Cache<String, byte[]>  binDataCache;
+    final Cache<String, String>  binDataCache;
 
     /// 配置项
     final AtomicReference<Config> config             = new AtomicReference<>();
@@ -98,7 +98,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
         this.binDataCache = globalCacheManager.createCache(
           "ncada_bin_data_cache",
           String.class,
-          byte[].class,
+          String.class,
           50,
           100,
           0,

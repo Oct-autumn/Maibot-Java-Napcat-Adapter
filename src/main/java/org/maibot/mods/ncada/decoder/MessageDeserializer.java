@@ -8,10 +8,12 @@ import org.maibot.sdk.SNoGenerator;
 import org.maibot.sdk.storage.domain.StreamType;
 import org.maibot.sdk.storage.model.msgevt.MessageMeta;
 import org.maibot.sdk.storage.model.msgevt.MessageMetaFactory;
+import org.maibot.sdk.util.HashUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
+import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -189,37 +191,38 @@ class MessageDeserializer {
 
         var fId = ncProtocolDecoder.databaseService.exec(em -> {
             var url = msgData.get("url").asString();
+
+            var hash = ncProtocolDecoder.binDataCache.get(url);
+            if (hash != null) {
+                // 存在url->hash缓存，使用其获取文件记录
+                var result = ncProtocolDecoder.binFileManager.get(em, hash);
+                if (result != null) {
+                    // 文件记录存在
+                    return result.binFile().getId();
+                }
+            }
+
+            // 不存在url->hash缓存，或缓存失效，继续后续流程
+
             // 截取文件类型
             String fileName = msgData.get("file").asString();
             var fileType = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
-            var result = ncProtocolDecoder.binFileManager.get(em, url);
+
+            // 重新下载
+            var fetchedData = Utils.getImgData(msgData.get("url").asString());
+            if (fetchedData == null) {
+                return null;
+            }
+
+            hash = HashUtils.getSha256Hash(fetchedData);
+
+            var result = ncProtocolDecoder.binFileManager.getOrCreatIfAbsent(em, hash , fileType, fetchedData);
             if (result != null) {
-                // 文件记录存在
-                if (result.getData() != null) {
-                    // 数据存在
-                    return result.getBinFile().getId();
-                } else {
-                    // 数据丢失，重新下载
-                    var fetchedData = Utils.getImgData(url);
-                    if (fetchedData != null) {
-                        var updatedBinFile = result.getBinFile();
-                        result = ncProtocolDecoder.binFileManager.update(em, updatedBinFile, fetchedData);
-                        if (result != null) {
-                            return result.getBinFile().getId();
-                        }
-                    }
-                }
+                // 更新缓存
+                ncProtocolDecoder.binDataCache.put(url, hash);
+                return result.binFile().getId();
             } else {
-                // 文件记录不存在，重新下载
-                var fetchedData = Utils.getImgData(msgData.get("url").asString());
-                if (fetchedData != null) {
-                    result = ncProtocolDecoder.binFileManager.getOrCreatIfAbsent(em, url, fileType, fetchedData);
-                    if (result != null) {
-                        return result.getBinFile().getId();
-                    } else {
-                        log.warn("无法创建图片文件记录，URL: {}", msgData.get("url").asString());
-                    }
-                }
+                log.warn("无法创建图片文件记录，URL: {}", msgData.get("url").asString());
             }
             return null;
         });
