@@ -66,7 +66,7 @@ public class BarrierOrderedEvtQueue implements DestroyableComponent {
      */
     public void finishDeserializing(MessageEvent msg) {
         var now = System.currentTimeMillis();
-        SNoGenerator.SerialNo msgSNo = msg.sequence();
+        SNoGenerator.SerialNo msgSNo = msg.getSerialNo();
         if (processQueue.peek() == msgSNo) {
             // 无处理中的前序消息，直接发送
             processQueue.poll();
@@ -126,7 +126,7 @@ public class BarrierOrderedEvtQueue implements DestroyableComponent {
         }
         log.debug("已启动消息缓冲队列");
         isRunning = true;
-        executorService.submit(
+        executorService.submit(false,
           () -> {
               while (isRunning) {
                   try {
@@ -186,7 +186,7 @@ public class BarrierOrderedEvtQueue implements DestroyableComponent {
                       notifyLock.unlock();
                   }
               }
-          }, false
+          }
         );
     }
 
@@ -212,7 +212,7 @@ public class BarrierOrderedEvtQueue implements DestroyableComponent {
     private void sendBufferedMessage(MessageEvent msg, long processDelay, long queueDelay) {
         log.debug(
           "推送消息（SNo.{}）至core，处理延迟：{}ms，排队延迟：{}ms",
-          msg.sequence().toHexString(),
+          msg.getSerialNo().toHexString(),
           processDelay,
           queueDelay
         );

@@ -140,7 +140,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
         var mdcCtx = MDC.getCopyOfContextMap(); // 获取当前 MDC 上下文
 
         // 发起异步解析
-        taskExecuteService.submit(
+        taskExecuteService.submit(false,
           () -> {
               var sNo = SNoGenerator.nextSeq();
               // 传递 MDC 上下文
@@ -181,7 +181,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
               } finally {
                   MDC.clear();
               }
-          }, false
+          }
         ).exceptionally(throwable -> {
             log.warn("异步反序列化 NapCat 事件时发生异常", throwable);
             return null;

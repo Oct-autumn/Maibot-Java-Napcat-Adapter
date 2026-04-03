@@ -89,7 +89,7 @@ class MetaEventDeserializer {
             if (!ncProtocolDecoder.running) {
                 ncProtocolDecoder.running = true;
                 // 启动心跳监测线程
-                ncProtocolDecoder.taskExecuteService.submit(() -> heartbeatWatchdog(ctx), true);
+                ncProtocolDecoder.taskExecuteService.submit(true, () -> heartbeatWatchdog(ctx));
             }
         }
     }

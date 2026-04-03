@@ -3,6 +3,7 @@ package org.maibot.mods.ncada.msgevt;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
+import org.jetbrains.annotations.NotNull;
 import org.maibot.sdk.storage.model.msgevt.AbstractMessageEventFactory;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -41,8 +42,9 @@ public class MessageEventFactory extends AbstractMessageEventFactory {
         super(MessageEvent.class.getName());
     }
 
+    @NotNull
     @Override
-    protected AbstractMessageEventFactory fromRawContentJson(ObjectMapper objectMapper, String jsonString) {
+    protected AbstractMessageEventFactory fromRawContentJson(ObjectMapper objectMapper, @NotNull String jsonString) {
         var rawContentNode = objectMapper.readTree(jsonString);
 
         this.message = objectMapper.treeToValue(rawContentNode.get("message_seg"), MessageEvent.MessageSeg.class);
@@ -59,14 +61,17 @@ public class MessageEventFactory extends AbstractMessageEventFactory {
         return this;
     }
 
+    @NotNull
     @Override
     public MessageEvent build() {
+        var messageMeta = getMessageMeta();
+        assert messageMeta != null;
         return new MessageEvent(
           messageMeta.platform(),
           messageMeta.senderInfo(),
           messageMeta.streamInfo(),
-          timestamp,
-          serialNo,
+          getTimestamp(),
+          getSequence(),
           message,
           extra
         );

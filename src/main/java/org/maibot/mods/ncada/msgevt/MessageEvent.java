@@ -1,7 +1,9 @@
 package org.maibot.mods.ncada.msgevt;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import jakarta.persistence.EntityManager;
 import lombok.NonNull;
+import org.jetbrains.annotations.NotNull;
 import org.maibot.sdk.SNoGenerator;
 import org.maibot.sdk.storage.model.msgevt.AbstractMessageEvent;
 import org.maibot.sdk.storage.model.msgevt.MessageMeta;
@@ -10,7 +12,6 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
-import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 
@@ -40,11 +41,13 @@ public final class MessageEvent extends AbstractMessageEvent {
         this.extra = extra;
     }
 
+    @NotNull
     @Override
-    public String toPromptString() {
+    public String toPromptString(@NotNull EntityManager em) {
         return "";
     }
 
+    @NotNull
     @Override
     protected String toRawContentJson(ObjectMapper objectMapper) {
         ObjectNode node = new JsonNodeFactory().objectNode();
@@ -55,13 +58,14 @@ public final class MessageEvent extends AbstractMessageEvent {
         return objectMapper.writeValueAsString(node);
     }
 
+    @NotNull
     @Override
     public String toString() {
         return String.format(
           "MessageEvent[messageMeta=%s, timestamp=%d, sequence=%s, messageSeg=%s, extra=%s]",
-          this.messageMeta,
-          this.timestamp,
-          this.serialNo,
+          this.getMessageMeta(),
+          this.getTimestamp(),
+          this.getSerialNo(),
           this.messageSeg,
           this.extra
         );

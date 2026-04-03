@@ -4,6 +4,7 @@ import java.time.Instant
 plugins {
     id("java")
     idea
+    kotlin("jvm")
 }
 
 // **Development only**
@@ -245,10 +246,10 @@ fun isValidVersionRange(versionRange: String): Boolean {
     if (rangeMatch != null) {
         val lb = rangeMatch.groups["lb"]?.value
         val rb = rangeMatch.groups["rb"]?.value
-        if (lb != null && lb.isNotEmpty() && !semverRegex.matches(lb)) {
+        if (!lb.isNullOrEmpty() && !semverRegex.matches(lb)) {
             return false
         }
-        if (rb != null && rb.isNotEmpty() && !semverRegex.matches(rb)) {
+        if (!rb.isNullOrEmpty() && !semverRegex.matches(rb)) {
             return false
         }
     } else if (semverRegex.matches(versionRange).not()) {
@@ -303,4 +304,7 @@ fun calcSrcHash(): String {
     }
 
     return digest.digest().joinToString("") { "%02x".format(it) }
+}
+kotlin {
+    jvmToolchain(21)
 }

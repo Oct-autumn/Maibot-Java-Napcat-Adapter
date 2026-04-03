@@ -1,6 +1,8 @@
 package org.maibot.mods.ncada.decoder;
 
 import io.netty.channel.ChannelHandlerContext;
+import jakarta.persistence.EntityManager;
+import kotlin.jvm.functions.Function1;
 import org.maibot.mods.ncada.Utils;
 import org.maibot.mods.ncada.msgevt.MessageEvent;
 import org.maibot.mods.ncada.msgevt.MessageEventFactory;
@@ -13,10 +15,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 
-import java.io.ByteArrayInputStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Function;
 
 import static org.maibot.mods.ncada.NapcatAdapterMod.PLATFORM_NAME;
 
@@ -71,21 +73,18 @@ class MessageDeserializer {
             return null;
         } else {
             // 生成事件元信息
+            assert streamInfo.privateInfo() != null;
             msgEventFactory.setMessageMeta(new MessageMetaFactory().setPlatform(PLATFORM_NAME)
                                                                    .setSenderInfo(streamInfo.privateInfo())
                                                                    .setStreamInfo(streamInfo)
                                                                    .build());
         }
 
+        assert msgEventFactory.getMessageMeta() != null;
+
         // 消息内容
         msgEventFactory.setMessage(Objects.requireNonNullElseGet(
-          parseMessageContent(
-            ctx,
-            rawJsonNode.get("message"),
-            false,
-            msgEventFactory.getMessageMeta()
-                           .streamInfo()
-          ),
+          parseMessageContent(ctx, rawJsonNode.get("message"), false, msgEventFactory.getMessageMeta().streamInfo()),
           () -> MessageEvent.MessageSeg.listSeg(List.of(MessageEvent.MessageSeg.textSeg("无法解析的消息内容")))
         ));
 
@@ -146,12 +145,7 @@ class MessageDeserializer {
                 )));
 
                 messageSegments.add(Objects.requireNonNullElseGet(
-                  parseMessageContent(
-                    ctx,
-                    replyDetailJsonNode.get("message"),
-                    true,
-                    streamInfo
-                  ),
+                  parseMessageContent(ctx, replyDetailJsonNode.get("message"), true, streamInfo),
                   () -> MessageEvent.MessageSeg.textSeg("无法解析的回复内容")
                 ));
 
@@ -198,7 +192,7 @@ class MessageDeserializer {
                 var result = ncProtocolDecoder.binFileManager.get(em, hash);
                 if (result != null) {
                     // 文件记录存在
-                    return result.binFile().getId();
+                    return result.binFile.id;
                 }
             }
 
@@ -216,11 +210,11 @@ class MessageDeserializer {
 
             hash = HashUtils.getSha256Hash(fetchedData);
 
-            var result = ncProtocolDecoder.binFileManager.getOrCreatIfAbsent(em, hash , fileType, fetchedData);
+            var result = ncProtocolDecoder.binFileManager.getOrCreatIfAbsent(em, hash, fileType, fetchedData);
             if (result != null) {
                 // 更新缓存
                 ncProtocolDecoder.binDataCache.put(url, hash);
-                return result.binFile().getId();
+                return result.binFile.id;
             } else {
                 log.warn("无法创建图片文件记录，URL: {}", msgData.get("url").asString());
             }
@@ -271,6 +265,7 @@ class MessageDeserializer {
             }
         } else {
             // At 了其他人 （一定是在群聊中，私聊没有 At）
+            assert streamInfo.groupInfo() != null;
             var memberInfo = ncProtocolDecoder.napcatReqManager.getGroupMemberInfo(
               ctx,
               streamInfo.groupInfo().platformId(),
@@ -464,9 +459,8 @@ class MessageDeserializer {
             } else {
                 // 更新昵称信息
                 var currentNickname = senderInfoJson.get("nickname").asString();
-                if (interactionEntity.getNickname() == null || !interactionEntity.getNickname()
-                                                                                 .equals(currentNickname)) {
-                    interactionEntity.setNickname(currentNickname);
+                if (interactionEntity.nickname == null || !interactionEntity.nickname.equals(currentNickname)) {
+                    interactionEntity.nickname = currentNickname;
                     em.merge(interactionEntity);
                 }
             }
@@ -497,8 +491,10 @@ class MessageDeserializer {
             var interactionGroup = ncProtocolDecoder.interactionGroupManager.getOrCreatIfAbsent(
               em,
               PLATFORM_NAME,
-              rawJsonNode.get("group_id").asString(),
-              rawJsonNode.get("group_name") == null ? null : rawJsonNode.get("group_name").asString()
+              rawJsonNode.get("group_id")
+                         .asString(),
+              rawJsonNode.get("group_name") == null ? null : rawJsonNode.get("group_name")
+                                                                        .asString()
             );
 
             if (interactionGroup == null) {
@@ -510,9 +506,8 @@ class MessageDeserializer {
                 return false;
             } else {
                 var currentGroupName = rawJsonNode.get("group_name").asString();
-                if (interactionGroup.getGroupName() == null || !interactionGroup.getGroupName()
-                                                                                .equals(currentGroupName)) {
-                    interactionGroup.setGroupName(currentGroupName);
+                if (interactionGroup.groupName == null || !interactionGroup.groupName.equals(currentGroupName)) {
+                    interactionGroup.groupName = currentGroupName;
                     em.merge(interactionGroup);
                 }
             }
@@ -535,9 +530,8 @@ class MessageDeserializer {
                 return false;
             } else {    // 更新昵称信息
                 var currentNickname = senderInfoJson.get("nickname").asString();
-                if (interactionEntity.getNickname() == null || !interactionEntity.getNickname()
-                                                                                 .equals(currentNickname)) {
-                    interactionEntity.setNickname(currentNickname);
+                if (interactionEntity.nickname == null || !interactionEntity.nickname.equals(currentNickname)) {
+                    interactionEntity.nickname = currentNickname;
                     em.merge(interactionEntity);
                 }
             }
@@ -559,8 +553,8 @@ class MessageDeserializer {
                 return false;
             } else {    // 更新群名片信息
                 var currentCardName = senderInfoJson.get("card").asString();
-                if (groupMember.getCardName() == null || !groupMember.getCardName().equals(currentCardName)) {
-                    groupMember.setCardName(currentCardName);
+                if (groupMember.cardName == null || !groupMember.cardName.equals(currentCardName)) {
+                    groupMember.cardName = currentCardName;
                     em.persist(groupMember);
                 }
             }
@@ -637,7 +631,12 @@ class MessageDeserializer {
                 )));
 
                 forwardSegments.add(Objects.requireNonNullElseGet(
-                  parseMessageContent(ctx, node.get("message"), false, streamInfo),
+                  parseMessageContent(
+                    ctx,
+                    node.get("message"),
+                    false,
+                    streamInfo
+                  ),
                   () -> MessageEvent.MessageSeg.textSeg("无法解析的消息内容")
                 ));
 
