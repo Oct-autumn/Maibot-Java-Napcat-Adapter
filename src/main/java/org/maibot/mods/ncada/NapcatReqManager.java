@@ -26,12 +26,12 @@ public class NapcatReqManager {
 
     @AutoInject
     private NapcatReqManager(GlobalCacheManager globalCacheManager) {
-        this.requestCache = globalCacheManager.createCache(
+        this.requestCache = globalCacheManager.createCacheIfAbsent(
           "ncada_request_cache",
           String.class,
           JsonNode.class,
-          32,
-          32,
+          128,
+          4,
           0,
           null
         );

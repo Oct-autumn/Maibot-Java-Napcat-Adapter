@@ -1,8 +1,6 @@
 package org.maibot.mods.ncada.decoder;
 
 import io.netty.channel.ChannelHandlerContext;
-import jakarta.persistence.EntityManager;
-import kotlin.jvm.functions.Function1;
 import org.maibot.mods.ncada.Utils;
 import org.maibot.mods.ncada.msgevt.MessageEvent;
 import org.maibot.mods.ncada.msgevt.MessageEventFactory;
@@ -18,7 +16,6 @@ import tools.jackson.databind.JsonNode;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
-import java.util.function.Function;
 
 import static org.maibot.mods.ncada.NapcatAdapterMod.PLATFORM_NAME;
 
@@ -26,7 +23,6 @@ class MessageDeserializer {
     private final static Logger log = LoggerFactory.getLogger(MessageDeserializer.class);
 
     private final NcProtocolDecoder ncProtocolDecoder;
-
 
     public MessageDeserializer(NcProtocolDecoder ncProtocolDecoder) {
         this.ncProtocolDecoder = ncProtocolDecoder;
@@ -183,52 +179,66 @@ class MessageDeserializer {
             isEmoji = msgData.has("emoji_id") && msgData.has("emoji_package_id");
         }
 
-        var fId = ncProtocolDecoder.databaseService.exec(em -> {
-            var url = msgData.get("url").asString();
+        var imgFileWithData = ncProtocolDecoder.databaseService.exec(
+          em -> {
+              var url = msgData.get("url").asString();
 
-            var hash = ncProtocolDecoder.binDataCache.get(url);
-            if (hash != null) {
-                // 存在url->hash缓存，使用其获取文件记录
-                var result = ncProtocolDecoder.binFileManager.get(em, hash);
-                if (result != null) {
-                    // 文件记录存在
-                    return result.binFile.id;
-                }
-            }
+              var hash = ncProtocolDecoder.imageHashCache.get(url);
+              if (hash != null) {
+                  // 存在url->hash缓存，使用其获取文件记录
+                  var result = ncProtocolDecoder.binFileManager.get(em, hash);
+                  if (result != null) {
+                      // 文件记录存在
+                      return result;
+                  }
+              }
 
-            // 不存在url->hash缓存，或缓存失效，继续后续流程
+              // 不存在url->hash缓存，或缓存失效，继续后续流程
 
-            // 截取文件类型
-            String fileName = msgData.get("file").asString();
-            var fileType = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
+              // 截取文件类型
+              String fileName = msgData.get("file").asString();
+              var fileType = fileName.substring(fileName.lastIndexOf('.') + 1).toLowerCase();
 
-            // 重新下载
-            var fetchedData = Utils.getImgData(msgData.get("url").asString());
-            if (fetchedData == null) {
-                return null;
-            }
+              // 重新下载
+              var fetchedData = Utils.getImgData(msgData.get("url").asString());
+              if (fetchedData == null) {
+                  return null;
+              }
 
-            hash = HashUtils.getSha256Hash(fetchedData);
+              hash = HashUtils.getSha256Hash(fetchedData);
 
-            var result = ncProtocolDecoder.binFileManager.getOrCreatIfAbsent(em, hash, fileType, fetchedData);
-            if (result != null) {
-                // 更新缓存
-                ncProtocolDecoder.binDataCache.put(url, hash);
-                return result.binFile.id;
-            } else {
-                log.warn("无法创建图片文件记录，URL: {}", msgData.get("url").asString());
-            }
-            return null;
-        });
+              var result = ncProtocolDecoder.binFileManager.getOrCreatIfAbsent(
+                em,
+                hash,
+                fileType,
+                fetchedData
+              );
+              if (result != null) {
+                  // 更新缓存
+                  ncProtocolDecoder.imageHashCache.put(url, hash);
+                  return result;
+              } else {
+                  log.warn("无法创建图片文件记录，URL: {}", msgData.get("url").asString());
+              }
+              return null;
+          }
+        );
 
-        if (fId == null) {
+        if (imgFileWithData == null) {
             var defaultPrompt = isEmoji ? "[未知表情包]" : "[未知图片]";
             messageSegments.add(MessageEvent.MessageSeg.textSeg(imageSummary.isBlank() ? defaultPrompt : imageSummary));
         } else {
+            var imgId = imgFileWithData.binFile.id;
+            assert imgId != null;
+            // 发起异步获取图片描述的请求
+            ncProtocolDecoder.databaseService.execAsync(em -> {
+                ncProtocolDecoder.imageDescribeManager.getOrCreatIfAbsent(em, imgFileWithData, isEmoji);
+            });
+
             if (isEmoji) {
-                messageSegments.add(MessageEvent.MessageSeg.emojiSeg(fId));
+                messageSegments.add(MessageEvent.MessageSeg.emojiSeg(imgId));
             } else {
-                messageSegments.add(MessageEvent.MessageSeg.imageSeg(fId));
+                messageSegments.add(MessageEvent.MessageSeg.imageSeg(imgId));
             }
         }
     }
@@ -371,21 +381,25 @@ class MessageDeserializer {
                 switch (subType) {
                     case "friend" -> {
                         // 处理好友私聊消息
-                        if (!ncProtocolDecoder.applyFilters(
-                          rawJsonNode.get("sender").get("user_id").asString(),
+                        var senderInfoJson = rawJsonNode.get("sender");
+                        var senderUserId = senderInfoJson.get("user_id").asString();
+                        var senderNickname = senderInfoJson.get("nickname").asString();
+                        var senderCard = senderInfoJson.get("card").asString(null);
+
+                        if (ncProtocolDecoder.applyFilters(
+                          senderUserId,
                           null,
                           StreamType.PRIVATE
                         )) {
-                            var senderInfoJson = rawJsonNode.get("sender");
-                            if (doPrivateStreamPersistence(senderInfoJson)) {
-                                return new MessageMeta.StreamInfo(
-                                  new MessageMeta.EntityInfo(
-                                    senderInfoJson.get("user_id").asString(),
-                                    senderInfoJson.get("nickname").asString(),
-                                    senderInfoJson.get("card").asString()
-                                  ), null, StreamType.PRIVATE
-                                );
-                            }
+                            return null;
+                        }
+
+                        if (doPrivateStreamPersistence(senderUserId, senderNickname)) {
+                            return new MessageMeta.StreamInfo(
+                              new MessageMeta.EntityInfo(senderUserId, senderNickname, senderCard),
+                              null,
+                              StreamType.PRIVATE
+                            );
                         }
                         return null;
                     }
@@ -402,27 +416,28 @@ class MessageDeserializer {
             case "group" -> {
                 switch (subType) {
                     case "normal" -> {
-                        if (!ncProtocolDecoder.applyFilters(
-                          rawJsonNode.get("sender").get("user_id").asString(),
-                          rawJsonNode.get("group_id").asString(),
-                          StreamType.GROUP
-                        )) {// 处理普通群消息
-                            var senderInfoJson = rawJsonNode.get("sender");
+                        // 处理普通群消息
+                        var senderInfoJson = rawJsonNode.get("sender");
+                        var senderUserId = senderInfoJson.get("user_id").asString();
+                        var senderNickname = senderInfoJson.get("nickname").asString();
+                        var senderCard = senderInfoJson.get("card").asString(null);
+                        var groupId = rawJsonNode.get("group_id").asString();
+                        var groupName = rawJsonNode.get("group_name").asString(null);
 
-                            if (doGroupStreamPersistence(rawJsonNode)) {
-                                return new MessageMeta.StreamInfo(
-                                  new MessageMeta.EntityInfo(
-                                    senderInfoJson.get("user_id").asString(),
-                                    senderInfoJson.get("nickname").asString(),
-                                    senderInfoJson.get("card").asString()
-                                  ),
-                                  new MessageMeta.GroupInfo(
-                                    rawJsonNode.get("group_id").asString(),
-                                    rawJsonNode.get("group_name").asString()
-                                  ),
-                                  StreamType.GROUP
-                                );
-                            }
+                        if (ncProtocolDecoder.applyFilters(
+                          senderUserId,
+                          groupId,
+                          StreamType.GROUP
+                        )) {
+                            return null;
+                        }
+
+                        if (doGroupStreamPersistence(groupId, groupName, senderUserId, senderNickname, senderCard)) {
+                            return new MessageMeta.StreamInfo(
+                              new MessageMeta.EntityInfo(senderUserId, senderNickname, senderCard),
+                              new MessageMeta.GroupInfo(groupId, groupName),
+                              StreamType.GROUP
+                            );
                         }
                         return null;
                     }
@@ -437,30 +452,26 @@ class MessageDeserializer {
         return null;
     }
 
-    private Boolean doPrivateStreamPersistence(JsonNode rawJsonNode) {
-        var senderInfoJson = rawJsonNode.get("sender");
+    private Boolean doPrivateStreamPersistence(String senderUserId, String senderNickname) {
         return ncProtocolDecoder.databaseService.exec(em -> {
             var interactionEntity = ncProtocolDecoder.interactionEntityManager.getOrCreatIfAbsent(
               em,
               PLATFORM_NAME,
-              senderInfoJson.get("user_id")
-                            .asString(),
-              senderInfoJson.get("nickname")
-                            .asString()
+              senderUserId,
+              senderNickname
             );
 
             if (interactionEntity == null) {
                 log.warn(
                   "无法获取或创建交互实体，平台: {}, 用户ID: {}",
                   PLATFORM_NAME,
-                  senderInfoJson.get("user_id").asString()
+                  senderUserId
                 );
                 return false;
             } else {
                 // 更新昵称信息
-                var currentNickname = senderInfoJson.get("nickname").asString();
-                if (interactionEntity.nickname == null || !interactionEntity.nickname.equals(currentNickname)) {
-                    interactionEntity.nickname = currentNickname;
+                if (senderNickname != null && (interactionEntity.nickname == null || !interactionEntity.nickname.equals(senderNickname))) {
+                    interactionEntity.nickname = senderNickname;
                     em.merge(interactionEntity);
                 }
             }
@@ -476,7 +487,7 @@ class MessageDeserializer {
                 log.warn(
                   "无法获取或创建交互流，平台: {}, 用户ID: {}",
                   PLATFORM_NAME,
-                  senderInfoJson.get("user_id").asString()
+                  senderUserId
                 );
                 return false;
             }
@@ -485,29 +496,31 @@ class MessageDeserializer {
         });
     }
 
-    private Boolean doGroupStreamPersistence(JsonNode rawJsonNode) {
-        var senderInfoJson = rawJsonNode.get("sender");
+    private Boolean doGroupStreamPersistence(
+      String groupId,
+      String groupName,
+      String senderUserId,
+      String senderNickname,
+      String senderCard
+    ) {
         return ncProtocolDecoder.databaseService.exec(em -> {
             var interactionGroup = ncProtocolDecoder.interactionGroupManager.getOrCreatIfAbsent(
               em,
               PLATFORM_NAME,
-              rawJsonNode.get("group_id")
-                         .asString(),
-              rawJsonNode.get("group_name") == null ? null : rawJsonNode.get("group_name")
-                                                                        .asString()
+              groupId,
+              groupName
             );
 
             if (interactionGroup == null) {
                 log.warn(
                   "无法获取或创建交互群，平台: {}, 群ID: {}",
                   PLATFORM_NAME,
-                  rawJsonNode.get("group_id").asString()
+                  groupId
                 );
                 return false;
             } else {
-                var currentGroupName = rawJsonNode.get("group_name").asString();
-                if (interactionGroup.groupName == null || !interactionGroup.groupName.equals(currentGroupName)) {
-                    interactionGroup.groupName = currentGroupName;
+                if (groupName != null && (interactionGroup.groupName == null || !interactionGroup.groupName.equals(groupName))) {
+                    interactionGroup.groupName = groupName;
                     em.merge(interactionGroup);
                 }
             }
@@ -515,23 +528,20 @@ class MessageDeserializer {
             var interactionEntity = ncProtocolDecoder.interactionEntityManager.getOrCreatIfAbsent(
               em,
               PLATFORM_NAME,
-              senderInfoJson.get("user_id")
-                            .asString(),
-              senderInfoJson.get("nickname")
-                            .asString()
+              senderUserId,
+              senderNickname
             );
 
             if (interactionEntity == null) {
                 log.warn(
                   "无法获取或创建交互实体，平台: {}, 用户ID: {}",
                   PLATFORM_NAME,
-                  senderInfoJson.get("user_id").asString()
+                  senderUserId
                 );
                 return false;
             } else {    // 更新昵称信息
-                var currentNickname = senderInfoJson.get("nickname").asString();
-                if (interactionEntity.nickname == null || !interactionEntity.nickname.equals(currentNickname)) {
-                    interactionEntity.nickname = currentNickname;
+                if (senderNickname != null && (interactionEntity.nickname == null || !interactionEntity.nickname.equals(senderNickname))) {
+                    interactionEntity.nickname = senderNickname;
                     em.merge(interactionEntity);
                 }
             }
@@ -540,21 +550,19 @@ class MessageDeserializer {
               em,
               interactionGroup,
               interactionEntity,
-              senderInfoJson.get("card") == null ? null : senderInfoJson.get("card").asString()
+              senderCard
             );
 
             if (groupMember == null) {
                 log.warn(
                   "无法获取或创建群成员，平台: {}, 群ID: {}, 用户ID: {}",
                   PLATFORM_NAME,
-                  rawJsonNode.get("group_id").asString(),
-                  senderInfoJson.get("user_id").asString()
+                  groupId, senderUserId
                 );
                 return false;
             } else {    // 更新群名片信息
-                var currentCardName = senderInfoJson.get("card").asString();
-                if (groupMember.cardName == null || !groupMember.cardName.equals(currentCardName)) {
-                    groupMember.cardName = currentCardName;
+                if (senderCard != null && (groupMember.cardName == null || !groupMember.cardName.equals(senderCard))) {
+                    groupMember.cardName = senderCard;
                     em.persist(groupMember);
                 }
             }
@@ -570,8 +578,8 @@ class MessageDeserializer {
                 log.warn(
                   "无法获取或创建交互流，平台: {}, 群ID: {}, 用户ID: {}",
                   PLATFORM_NAME,
-                  rawJsonNode.get("group_id").asString(),
-                  senderInfoJson.get("user_id").asString()
+                  groupId,
+                  senderUserId
                 );
                 return false;
             }

@@ -2,10 +2,10 @@ package org.maibot.mods.ncada.evtbuffer;
 
 import org.maibot.mods.ncada.msgevt.MessageEvent;
 import org.maibot.sdk.SNoGenerator;
-import org.maibot.sdk.TaskExecuteService;
 import org.maibot.sdk.ioc.AutoInject;
 import org.maibot.sdk.ioc.Component;
 import org.maibot.sdk.ioc.DestroyableComponent;
+import org.maibot.sdk.task.TaskExecuteService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 

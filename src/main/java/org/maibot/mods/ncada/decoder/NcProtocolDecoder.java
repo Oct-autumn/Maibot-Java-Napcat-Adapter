@@ -9,13 +9,13 @@ import org.maibot.mods.ncada.NapcatReqManager;
 import org.maibot.mods.ncada.QQFace;
 import org.maibot.mods.ncada.evtbuffer.BarrierOrderedEvtQueue;
 import org.maibot.sdk.SNoGenerator;
-import org.maibot.sdk.TaskExecuteService;
 import org.maibot.sdk.ioc.AutoInject;
 import org.maibot.sdk.ioc.Value;
 import org.maibot.sdk.manager.*;
 import org.maibot.sdk.storage.GlobalCacheManager;
 import org.maibot.sdk.storage.db.DatabaseService;
 import org.maibot.sdk.storage.domain.StreamType;
+import org.maibot.sdk.task.TaskExecuteService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -40,13 +40,14 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
     final GroupMemberManager       groupMemberManager;
     final InteractionStreamManager interactionStreamManager;
     final BinFileManager           binFileManager;
+    final ImageDescribeManager     imageDescribeManager;
 
     /// Napcat请求管理器
     final NapcatReqManager       napcatReqManager;
     /// 消息事件缓冲器
     final BarrierOrderedEvtQueue barrierOrderedEvtQueue;
     /// 二进制数据缓存
-    final Cache<String, String>  binDataCache;
+    final Cache<String, String>  imageHashCache;
 
     /// 配置项
     final AtomicReference<Config> config             = new AtomicReference<>();
@@ -76,6 +77,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
       GroupMemberManager groupMemberManager,
       InteractionStreamManager interactionStreamManager,
       BinFileManager binFileManager,
+      ImageDescribeManager imageDescribeManager,
       GlobalCacheManager globalCacheManager,
       NapcatReqManager napcatReqManager,
       BarrierOrderedEvtQueue barrierOrderedEvtQueue,
@@ -89,18 +91,19 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
         this.groupMemberManager = groupMemberManager;
         this.interactionStreamManager = interactionStreamManager;
         this.binFileManager = binFileManager;
+        this.imageDescribeManager = imageDescribeManager;
         this.napcatReqManager = napcatReqManager;
         this.barrierOrderedEvtQueue = barrierOrderedEvtQueue;
 
 
         this.barrierOrderedEvtQueue.startBuffering();
 
-        this.binDataCache = globalCacheManager.createCache(
+        this.imageHashCache = globalCacheManager.createCacheIfAbsent(
           "ncada_bin_data_cache",
           String.class,
           String.class,
-          50,
           100,
+          1,
           0,
           null
         );
