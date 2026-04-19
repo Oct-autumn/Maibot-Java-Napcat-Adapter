@@ -2,6 +2,7 @@ package org.maibot.mods.ncada.evtbuffer;
 
 import org.maibot.mods.ncada.msgevt.MessageEvent;
 import org.maibot.sdk.SNoGenerator;
+import org.maibot.sdk.eventchannel.GlobalEventService;
 import org.maibot.sdk.ioc.AutoInject;
 import org.maibot.sdk.ioc.Component;
 import org.maibot.sdk.ioc.DestroyableComponent;
@@ -35,6 +36,7 @@ public class BarrierOrderedEvtQueue implements DestroyableComponent {
     private final Map<SNoGenerator.SerialNo, DelayQueueItem> processingMap = new HashMap<>();
 
     private final TaskExecuteService executorService;
+    private final GlobalEventService globalEventService;
 
     private final ReentrantLock notifyLock = new ReentrantLock();
     private final Condition     notEmpty   = notifyLock.newCondition();
@@ -43,9 +45,11 @@ public class BarrierOrderedEvtQueue implements DestroyableComponent {
 
     @AutoInject
     private BarrierOrderedEvtQueue(
-      TaskExecuteService executorService
+      TaskExecuteService executorService,
+      GlobalEventService globalEventService
     ) {
         this.executorService = executorService;
+        this.globalEventService = globalEventService;
     }
 
     /**
@@ -126,7 +130,8 @@ public class BarrierOrderedEvtQueue implements DestroyableComponent {
         }
         log.debug("已启动消息缓冲队列");
         isRunning = true;
-        executorService.submit(false,
+        executorService.submit(
+          false,
           () -> {
               while (isRunning) {
                   try {
@@ -216,7 +221,7 @@ public class BarrierOrderedEvtQueue implements DestroyableComponent {
           processDelay,
           queueDelay
         );
-        // TODO: 推送消息到Core
+        globalEventService.fireEvent(msg);
     }
 
     @Override

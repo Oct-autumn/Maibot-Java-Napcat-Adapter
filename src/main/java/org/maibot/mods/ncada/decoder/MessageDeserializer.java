@@ -69,11 +69,12 @@ class MessageDeserializer {
             return null;
         } else {
             // 生成事件元信息
-            assert streamInfo.privateInfo() != null;
+            var senderInfo = streamInfo.privateInfo();
+            assert senderInfo != null;
             msgEventFactory.setMessageMeta(new MessageMetaFactory().setPlatform(PLATFORM_NAME)
-                                                                   .setSenderInfo(streamInfo.privateInfo())
-                                                                   .setStreamInfo(streamInfo)
-                                                                   .build());
+                                             .setSenderInfo(senderInfo)
+                                             .setStreamInfo(streamInfo)
+                                             .build());
         }
 
         assert msgEventFactory.getMessageMeta() != null;
@@ -127,8 +128,8 @@ class MessageDeserializer {
 
                 String displayId;
                 if (senderInfoJsonNode.get("user_id") != null && !senderInfoJsonNode.get("user_id")
-                                                                                    .asString()
-                                                                                    .isBlank()) {
+                  .asString()
+                  .isBlank()) {
                     displayId = senderInfoJsonNode.get("user_id").asString();
                 } else {
                     displayId = "未知ID";
@@ -147,7 +148,6 @@ class MessageDeserializer {
 
                 messageSegments.add(MessageEvent.MessageSeg.textSeg("] 说："));
             }
-
         }
     }
 
@@ -231,9 +231,12 @@ class MessageDeserializer {
             var imgId = imgFileWithData.binFile.id;
             assert imgId != null;
             // 发起异步获取图片描述的请求
-            ncProtocolDecoder.databaseService.execAsync(em -> {
-                ncProtocolDecoder.imageDescribeManager.getOrCreatIfAbsent(em, imgFileWithData, isEmoji);
-            });
+            ncProtocolDecoder.taskExecuteService.submit(
+              true, () -> ncProtocolDecoder.databaseService.exec(em -> {
+                  ncProtocolDecoder.imageDescribeManager.getOrCreatIfAbsent(em, imgFileWithData, isEmoji);
+              })
+            );
+
 
             if (isEmoji) {
                 messageSegments.add(MessageEvent.MessageSeg.emojiSeg(imgId));
@@ -470,7 +473,8 @@ class MessageDeserializer {
                 return false;
             } else {
                 // 更新昵称信息
-                if (senderNickname != null && (interactionEntity.nickname == null || !interactionEntity.nickname.equals(senderNickname))) {
+                if (senderNickname != null && (interactionEntity.nickname == null || !interactionEntity.nickname.equals(
+                  senderNickname))) {
                     interactionEntity.nickname = senderNickname;
                     em.merge(interactionEntity);
                 }
@@ -519,7 +523,8 @@ class MessageDeserializer {
                 );
                 return false;
             } else {
-                if (groupName != null && (interactionGroup.groupName == null || !interactionGroup.groupName.equals(groupName))) {
+                if (groupName != null && (interactionGroup.groupName == null || !interactionGroup.groupName.equals(
+                  groupName))) {
                     interactionGroup.groupName = groupName;
                     em.merge(interactionGroup);
                 }
@@ -540,7 +545,8 @@ class MessageDeserializer {
                 );
                 return false;
             } else {    // 更新昵称信息
-                if (senderNickname != null && (interactionEntity.nickname == null || !interactionEntity.nickname.equals(senderNickname))) {
+                if (senderNickname != null && (interactionEntity.nickname == null || !interactionEntity.nickname.equals(
+                  senderNickname))) {
                     interactionEntity.nickname = senderNickname;
                     em.merge(interactionEntity);
                 }
@@ -630,7 +636,7 @@ class MessageDeserializer {
                 String displayName = getDisplayName(senderInfoJsonNode);
 
                 String displayId = senderInfoJsonNode.has("user_id") ? senderInfoJsonNode.get("user_id")
-                                                                                         .asString() : "未知ID";
+                  .asString() : "未知ID";
 
                 forwardSegments.add(MessageEvent.MessageSeg.textSeg(String.format(
                   "\n[<%s:%s>:",
@@ -651,7 +657,7 @@ class MessageDeserializer {
                 forwardSegments.add(MessageEvent.MessageSeg.textSeg("]"));
             }
 
-            forwardSegments.add(MessageEvent.MessageSeg.textSeg("]"));
+            forwardSegments.add(MessageEvent.MessageSeg.textSeg("\n]"));
 
             return MessageEvent.MessageSeg.forwardSeg(forwardSegments);
         }
@@ -664,7 +670,7 @@ class MessageDeserializer {
             var forwardMsgDetailJsonNode = ncProtocolDecoder.napcatReqManager.getForwardMsgDetail(
               ctx,
               msgData.get("id")
-                     .asString()
+                .asString()
             );
             if (forwardMsgDetailJsonNode != null) {
                 var forwardMessage = recursivelyExtractForward(ctx, forwardMsgDetailJsonNode.get("messages"));
@@ -674,7 +680,7 @@ class MessageDeserializer {
                     return;
                 }
             }
-            messageSegments.add(MessageEvent.MessageSeg.textSeg("[转发消息解析失败]"));
+            messageSegments.add(MessageEvent.MessageSeg.textSeg("[转发消息 加载失败]"));
         }
     }
 }

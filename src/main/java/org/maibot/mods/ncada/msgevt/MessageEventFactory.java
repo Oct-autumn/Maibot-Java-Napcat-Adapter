@@ -4,6 +4,8 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.experimental.Accessors;
 import org.jetbrains.annotations.NotNull;
+import org.maibot.sdk.ioc.ObjectFactory;
+import org.maibot.sdk.ioc.Specify;
 import org.maibot.sdk.storage.model.msgevt.AbstractMessageEventFactory;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
@@ -11,9 +13,9 @@ import tools.jackson.databind.node.ObjectNode;
 import java.util.HashMap;
 import java.util.Map;
 
+@ObjectFactory
+@Specify("org.maibot.mods.ncada.msgevt.MessageEvent")
 public class MessageEventFactory extends AbstractMessageEventFactory {
-    private static final String OBJECT_TYPE = MessageEvent.class.getName();
-
     /// 额外字段的键值对
     private final Map<String, String>     extra   = new HashMap<>();
     /// 消息内容

@@ -6,14 +6,12 @@ package org.maibot.mods.ncada.msgevt
 import com.fasterxml.jackson.annotation.JsonProperty
 import jakarta.persistence.EntityManager
 import org.maibot.sdk.SNoGenerator.SerialNo
-import org.maibot.sdk.manager.InteractionEntityManager
-import org.maibot.sdk.manager.InteractionGroupManager
-import org.maibot.sdk.manager.InteractionStreamManager
+import org.maibot.sdk.ioc.IOC
 import org.maibot.sdk.storage.model.msgevt.AbstractMessageEvent
 import org.maibot.sdk.storage.model.msgevt.MessageMeta.EntityInfo
 import org.maibot.sdk.storage.model.msgevt.MessageMeta.StreamInfo
+import org.maibot.sdk.util.MapperUtils
 import org.maibot.sdk.util.StrUtils.strAbbreviate
-import tools.jackson.databind.ObjectMapper
 import tools.jackson.databind.node.JsonNodeFactory
 
 /**
@@ -30,34 +28,44 @@ class MessageEvent(
     /** 额外字段的键值对 */
     @field:JsonProperty(value = "extra") val extra: Map<String, String>
 ) : AbstractMessageEvent(platform, senderInfo, streamInfo, timestamp, sequence, OBJECT_TYPE) {
+    private var promptStr: String? = null
 
     /**
      * toPromptString只负责将消息内容转换为可读的Prompt。
      * 不负责格式化时间戳、消息发送者等消息元信息相关的内容。
      *
      */
+    @Synchronized
     override fun toPromptString(
         em: EntityManager,
-        interactionEntityManager: InteractionEntityManager,
-        interactionGroupManager: InteractionGroupManager,
-        interactionStreamManager: InteractionStreamManager
+        ioc: IOC
     ): String? {
-        if (messageSeg.segType != "list") {
-            // 最外层消息段应为 list 类型
-            // 如果不是 list 类型，则无法正确渲染消息内容，返回null
-            return null
-        }
+        if (promptStr != null) {
+            // 如果已经渲染过一次了，就直接返回缓存的结果，避免重复渲染
+            return promptStr
+        } else {
+            if (messageSeg.segType != "list") {
+                // 最外层消息段应为 list 类型
+                // 如果不是 list 类型，则无法正确渲染消息内容，返回null
+                return null
+            }
 
-        return renderListSeg(em, messageSeg.segList!!)
+            val render = ioc.get(MessagePromptRender::class.java)
+            val renderedStr = render.renderListSeg(em, messageSeg.segList!!)
+            promptStr = renderedStr
+
+            return renderedStr
+        }
     }
 
-    override fun toRawContentJson(objectMapper: ObjectMapper): String {
+    override fun toRawContentJson(): String {
+        val jsonMapper = MapperUtils.jsonMapper
         val node = JsonNodeFactory().objectNode().apply {
-            put("message_seg", objectMapper.writeValueAsString(messageSeg))
-            put("extra", objectMapper.writeValueAsString(extra))
+            put("message_seg", jsonMapper.writeValueAsString(messageSeg))
+            put("extra", jsonMapper.writeValueAsString(extra))
         }
 
-        return objectMapper.writeValueAsString(node)
+        return jsonMapper.writeValueAsString(node)
     }
 
     override fun toString(): String {
@@ -87,11 +95,11 @@ class MessageEvent(
      */
     @JvmRecord
     data class MessageSeg(
-        val segType: String,
-        val segList: List<MessageSeg>?,
-        val strData: String?,
-        val binFileId: Long?,
-        val extra: Map<String, String>?
+        @field:JsonProperty("seg_type", required = true) val segType: String,
+        @field:JsonProperty("seg_list") val segList: List<MessageSeg>? = null,
+        @field:JsonProperty("str_data") val strData: String? = null,
+        @field:JsonProperty("bin_file_id") val binFileId: Long? = null,
+        @field:JsonProperty("extra") val extra: Map<String, String>? = null
     ) {
         override fun toString(): String {
             val segType = this.segType
@@ -168,23 +176,5 @@ class MessageEvent(
 
     companion object {
         private val OBJECT_TYPE: String = MessageEvent::class.java.getName()
-
-        private fun renderListSeg(em: EntityManager, segList: List<MessageSeg>): String {
-            return mutableListOf<String>().apply {
-                segList.forEach { seg ->
-                    when (seg.segType) {
-                        "text" -> add(seg.strData!!)   // 文本消息段直接追加文本内容
-                        "at" -> {
-                            if (seg.extra?.get("self_mention") == "true") add("[${seg.strData!!.trim()}(你)]")  // At消息段如果是At自己，追加特殊标识
-                            else add("[${seg.strData!!.trim()}]")
-                        }
-                        "image", "emoji" -> add("[image id=${seg.binFileId}]")  // 图片和表情消息段追加占位文本，包含二进制文件ID
-                        "voice" -> add("[voice id=${seg.binFileId}]")
-                        "forward" -> add(renderListSeg(em, seg.segList!!))
-                        else -> add("[${seg.segType} data=${seg.strData ?: seg.binFileId ?: ""}]")
-                    }
-                }
-            }.joinToString(" ") // 最后将所有消息段内容连接成一个字符串
-        }
     }
 }
