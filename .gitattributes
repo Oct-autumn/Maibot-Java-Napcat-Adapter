@@ -1,0 +1,14 @@
+# 统一使用 LF，避免 Windows/WSL 之间来回切换产生整仓库假 diff
+* text=auto eol=lf
+
+# 以下类型保持原样，不做换行转换
+*.bat   text eol=crlf
+*.jar   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.zip   binary
+*.rar   binary
+*.db    binary
