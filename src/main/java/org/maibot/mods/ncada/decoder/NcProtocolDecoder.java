@@ -8,8 +8,10 @@ import org.maibot.mods.ncada.Config;
 import org.maibot.mods.ncada.NapcatReqManager;
 import org.maibot.mods.ncada.QQFace;
 import org.maibot.mods.ncada.evtbuffer.BarrierOrderedEvtQueue;
+import org.maibot.mods.ncada.msgevt.MessageEvent;
 import org.maibot.sdk.SNoGenerator;
 import org.maibot.sdk.ioc.AutoInject;
+import org.maibot.sdk.ioc.IOC;
 import org.maibot.sdk.ioc.Value;
 import org.maibot.sdk.manager.*;
 import org.maibot.sdk.storage.GlobalCacheManager;
@@ -48,6 +50,8 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
     final BarrierOrderedEvtQueue barrierOrderedEvtQueue;
     /// 二进制数据缓存
     final Cache<String, String>  imageHashCache;
+    /// IOC 容器（渲染 Prompt 时由 MessageEvent 内部取用）
+    final IOC                    ioc;
 
     /// 配置项
     final AtomicReference<Config> config             = new AtomicReference<>();
@@ -81,6 +85,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
       GlobalCacheManager globalCacheManager,
       NapcatReqManager napcatReqManager,
       BarrierOrderedEvtQueue barrierOrderedEvtQueue,
+      IOC ioc,
       @Value("${napcat-adapter:*}") Config config
     ) {
         this.taskExecuteService = taskExecuteService;
@@ -94,6 +99,7 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
         this.imageDescribeManager = imageDescribeManager;
         this.napcatReqManager = napcatReqManager;
         this.barrierOrderedEvtQueue = barrierOrderedEvtQueue;
+        this.ioc = ioc;
 
 
         this.barrierOrderedEvtQueue.startBuffering();
@@ -168,6 +174,8 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                               barrierOrderedEvtQueue.failDeserializing(sNo);
                           } else {
                               barrierOrderedEvtQueue.finishDeserializing(msgEvt);
+                              // Echo 调试回显：放在解析完成之后触发，异步执行、不阻塞保序队列
+                              echoPrivateMessage(ctx, msgEvt);
                           }
                       }
                       // 通知事件
@@ -240,6 +248,50 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
         }
 
         return false;
+    }
+
+    /**
+     * Echo 调试回显：收到私聊消息后，把渲染好的 prompt 文本原样发回给发送者。
+     *
+     * 仅在配置 enable_echo=true 时生效。渲染可能涉及图片描述生成等耗时操作，
+     * 因此放到虚拟线程异步执行，避免阻塞消息解析与保序队列。
+     *
+     * @param ctx    通道上下文（回发消息用）
+     * @param msgEvt 已完成解析的消息事件
+     */
+    private void echoPrivateMessage(ChannelHandlerContext ctx, MessageEvent msgEvt) {
+        if (!Boolean.TRUE.equals(this.config.get().enableEcho())) {
+            return;
+        }
+
+        var streamInfo = msgEvt.getMessageMeta().streamInfo();
+        if (streamInfo.streamType() != StreamType.PRIVATE) {
+            return;
+        }
+
+        var privateInfo = streamInfo.privateInfo();
+        if (privateInfo == null) {
+            log.warn("Echo 回显跳过：私聊消息缺少发送者信息");
+            return;
+        }
+
+        this.taskExecuteService.submit(true, () -> {
+            try {
+                // 用带 return 的块 Lambda：避免与 exec(Consumer<EntityManager>) 重载产生歧义
+                var promptText = this.databaseService.exec(em -> {
+                    return msgEvt.toPromptString(em, this.ioc);
+                });
+                if (promptText == null || promptText.isBlank()) {
+                    log.warn("Echo 回显跳过：消息内容渲染为空");
+                } else {
+                    this.napcatReqManager.sendPrivateMsg(ctx, privateInfo.platformId(), promptText);
+                    log.info("Echo 已回发私聊消息，用户ID：{}，内容：{}", privateInfo.platformId(), promptText);
+                }
+            } catch (Exception e) {
+                log.warn("Echo 回显处理失败", e);
+            }
+            return null;
+        });
     }
 
     private void noticeDeserializer(ChannelHandlerContext ctx, JsonNode jsonNode) {

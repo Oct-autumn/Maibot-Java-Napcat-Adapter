@@ -9,6 +9,7 @@ import org.maibot.sdk.storage.GlobalCacheManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import javax.cache.Cache;
 import java.util.Map;
@@ -23,9 +24,11 @@ public class NapcatReqManager {
     private final Cache<String, JsonNode>                  requestCache;
     /// 消息监听器
     private final Map<String, CompletableFuture<JsonNode>> eventListeners = new ConcurrentHashMap<>();
+    /// JSON 序列化器（用于安全地构造请求载荷，避免手工拼接字符串时转义出错）
+    private final ObjectMapper                             objectMapper;
 
     @AutoInject
-    private NapcatReqManager(GlobalCacheManager globalCacheManager) {
+    private NapcatReqManager(GlobalCacheManager globalCacheManager, ObjectMapper objectMapper) {
         this.requestCache = globalCacheManager.createCacheIfAbsent(
           "ncada_request_cache",
           String.class,
@@ -35,6 +38,7 @@ public class NapcatReqManager {
           0,
           null
         );
+        this.objectMapper = objectMapper;
     }
 
     /// 将 NapCat 回复消息反馈给对应的监听器
@@ -48,6 +52,57 @@ public class NapcatReqManager {
         } else {
             log.warn("未找到对应的 NapCat 回复消息监听器，echo: {}", echo);
         }
+    }
+
+    /// 发送私聊消息（fire-and-forget，不阻塞等待回执）
+    ///
+    /// 复用 OneBot 11 的 echo 应答机制：NapCat 收到请求后总会回一条带相同 echo 的响应。
+    /// 这里注册监听器消费响应（避免「未找到监听器」的告警，并在失败时记录日志），但不阻塞调用方。
+    ///
+    /// @param ctx    通道上下文
+    /// @param userId 目标用户 QQ 号
+    /// @param text   文本内容
+    public void sendPrivateMsg(ChannelHandlerContext ctx, String userId, String text) {
+        var requestUUID = UUID.randomUUID().toString();
+
+        // 用消息段数组而不是字符串：字符串会被 NapCat 当作 CQ 码解析，文本里带方括号等内容会被误处理
+        var payloadNode = objectMapper.createObjectNode();
+        payloadNode.put("action", "send_private_msg");
+        var paramsNode = payloadNode.putObject("params");
+        paramsNode.put("user_id", userId);
+        var messageNode = paramsNode.putArray("message");
+        var textSegNode = messageNode.addObject();
+        textSegNode.put("type", "text");
+        textSegNode.putObject("data").put("text", text);
+        payloadNode.put("echo", requestUUID);
+
+        var payload = objectMapper.writeValueAsString(payloadNode);
+
+        var replyFuture = sendRequest(ctx, payload, requestUUID);
+
+        // 不等待回执：收到响应后只做结果校验并清理监听器；NapCat 一直没回时也会因超时被清理
+        replyFuture.orTimeout(20, TimeUnit.SECONDS).whenComplete((reply, throwable) -> {
+            eventListeners.remove(requestUUID);
+
+            if (throwable != null) {
+                log.warn("发送私聊消息失败，用户ID：{}，原因：{}", userId, throwable.getMessage());
+                return;
+            }
+
+            var retcodeNode = reply.get("retcode"); // 注：napcat节点命名如此，不是retCode
+            var retcode = retcodeNode == null ? -1 : retcodeNode.asInt();
+            if (retcode != 0) {
+                var replyMessageNode = reply.get("message");
+                log.warn(
+                  "发送私聊消息被 NapCat 拒绝，用户ID：{}，retcode：{}，message：{}",
+                  userId,
+                  retcode,
+                  replyMessageNode == null ? "" : replyMessageNode.asString()
+                );
+            } else {
+                log.debug("私聊消息发送成功，用户ID：{}", userId);
+            }
+        });
     }
 
     /// 获取消息详情

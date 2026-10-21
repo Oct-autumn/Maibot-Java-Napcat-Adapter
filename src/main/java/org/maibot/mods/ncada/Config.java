@@ -14,7 +14,10 @@ public record Config(
   @JsonProperty(value = "group_filter", required = true) GroupFilter groupFilter,
   @JsonProperty(value = "friend_filter", required = true) FriendFilter friendFilter,
   @JsonProperty(value = "banned_users", required = true) BannedUsers banned,
-  @JsonProperty(value = "enable_poke", defaultValue = "false") Boolean enablePoke
+  @JsonProperty(value = "enable_poke", defaultValue = "false") Boolean enablePoke,
+  /// Echo 调试回显开关：收到私聊消息后，把渲染好的消息内容原样发回给发送者
+  /// 默认关闭，避免正式环境中意外刷屏
+  @JsonProperty(value = "enable_echo", defaultValue = "false") Boolean enableEcho
 ) {
     public enum FilterType {
         WHITELIST("whitelist"),
