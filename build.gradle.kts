@@ -100,7 +100,9 @@ dependencies {
     implementation("javax.cache:cache-api:1.1.1")
 
     // Netty for networking
-    implementation("io.netty:netty-all:4.2.6.Final")
+    // 版本必须与 Core / SDK 保持一致（4.2.12.Final）：Mod 声明的旧版本会被解析进运行时 classpath，
+    // 与 Core 编译期版本混用会导致网络服务启动失败
+    implementation("io.netty:netty-all:4.2.12.Final")
 
     // Jackson Annotations
     implementation("com.fasterxml.jackson.core:jackson-annotations:2.20")
