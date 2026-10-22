@@ -5,6 +5,7 @@ import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.codec.http.websocketx.TextWebSocketFrame;
 import org.maibot.mods.ncada.Config;
+import org.maibot.mods.ncada.NapcatAdapterMod;
 import org.maibot.mods.ncada.NapcatReqManager;
 import org.maibot.mods.ncada.QQFace;
 import org.maibot.mods.ncada.evtbuffer.BarrierOrderedEvtQueue;
@@ -14,6 +15,7 @@ import org.maibot.sdk.ioc.AutoInject;
 import org.maibot.sdk.ioc.IOC;
 import org.maibot.sdk.ioc.Value;
 import org.maibot.sdk.manager.*;
+import org.maibot.sdk.msg.OutgoingMessage;
 import org.maibot.sdk.storage.GlobalCacheManager;
 import org.maibot.sdk.storage.db.DatabaseService;
 import org.maibot.sdk.storage.domain.StreamType;
@@ -284,7 +286,10 @@ public class NcProtocolDecoder extends SimpleChannelInboundHandler<TextWebSocket
                 if (promptText == null || promptText.isBlank()) {
                     log.warn("Echo 回显跳过：消息内容渲染为空");
                 } else {
-                    this.napcatReqManager.sendPrivateMsg(ctx, privateInfo.platformId(), promptText);
+                    // 走管线的出站编码器：构造通用消息实例后写入 channel，由 NcProtocolEncoder 编码发送
+                    ctx.channel().writeAndFlush(
+                      OutgoingMessage.text(NapcatAdapterMod.PLATFORM_NAME, privateInfo.platformId(), promptText)
+                    );
                     log.info("Echo 已回发私聊消息，用户ID：{}，内容：{}", privateInfo.platformId(), promptText);
                 }
             } catch (Exception e) {

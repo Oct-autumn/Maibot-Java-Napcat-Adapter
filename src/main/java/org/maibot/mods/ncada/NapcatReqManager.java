@@ -54,38 +54,25 @@ public class NapcatReqManager {
         }
     }
 
-    /// 发送私聊消息（fire-and-forget，不阻塞等待回执）
+    /// 登记一条发送请求的回执监听（fire-and-forget）
     ///
     /// 复用 OneBot 11 的 echo 应答机制：NapCat 收到请求后总会回一条带相同 echo 的响应。
     /// 这里注册监听器消费响应（避免「未找到监听器」的告警，并在失败时记录日志），但不阻塞调用方。
     ///
-    /// @param ctx    通道上下文
-    /// @param userId 目标用户 QQ 号
-    /// @param text   文本内容
-    public void sendPrivateMsg(ChannelHandlerContext ctx, String userId, String text) {
-        var requestUUID = UUID.randomUUID().toString();
-
-        // 用消息段数组而不是字符串：字符串会被 NapCat 当作 CQ 码解析，文本里带方括号等内容会被误处理
-        var payloadNode = objectMapper.createObjectNode();
-        payloadNode.put("action", "send_private_msg");
-        var paramsNode = payloadNode.putObject("params");
-        paramsNode.put("user_id", userId);
-        var messageNode = paramsNode.putArray("message");
-        var textSegNode = messageNode.addObject();
-        textSegNode.put("type", "text");
-        textSegNode.putObject("data").put("text", text);
-        payloadNode.put("echo", requestUUID);
-
-        var payload = objectMapper.writeValueAsString(payloadNode);
-
-        var replyFuture = sendRequest(ctx, payload, requestUUID);
+    /// 由出站编码器（NcProtocolEncoder）在编码消息时调用。
+    ///
+    /// @param echo   请求的唯一标识符
+    /// @param target 目标描述（用于日志，例如用户 QQ 号）
+    public void trackSend(String echo, String target) {
+        var replyFuture = new CompletableFuture<JsonNode>();
+        eventListeners.put(echo, replyFuture);
 
         // 不等待回执：收到响应后只做结果校验并清理监听器；NapCat 一直没回时也会因超时被清理
         replyFuture.orTimeout(20, TimeUnit.SECONDS).whenComplete((reply, throwable) -> {
-            eventListeners.remove(requestUUID);
+            eventListeners.remove(echo);
 
             if (throwable != null) {
-                log.warn("发送私聊消息失败，用户ID：{}，原因：{}", userId, throwable.getMessage());
+                log.warn("发送消息失败，目标：{}，原因：{}", target, throwable.getMessage());
                 return;
             }
 
@@ -94,13 +81,13 @@ public class NapcatReqManager {
             if (retcode != 0) {
                 var replyMessageNode = reply.get("message");
                 log.warn(
-                  "发送私聊消息被 NapCat 拒绝，用户ID：{}，retcode：{}，message：{}",
-                  userId,
+                  "发送消息被 NapCat 拒绝，目标：{}，retcode：{}，message：{}",
+                  target,
                   retcode,
                   replyMessageNode == null ? "" : replyMessageNode.asString()
                 );
             } else {
-                log.debug("私聊消息发送成功，用户ID：{}", userId);
+                log.debug("消息发送成功，目标：{}", target);
             }
         });
     }
